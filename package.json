@@ -1,0 +1,29 @@
+{
+  "name": "binance-bot-simulator",
+  "version": "1.0.0",
+  "description": "Historical data collection and trading bot simulation for Binance",
+  "type": "module",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "collect": "node scripts/collect-data.js",
+    "simulate": "node scripts/run-simulation.js",
+    "analyze": "node scripts/analyze-results.js",
+    "db:init": "node src/database/init.js"
+  },
+  "dependencies": {
+    "better-sqlite3": "^9.2.2",
+    "axios": "^1.6.5",
+    "dotenv": "^16.3.1",
+    "winston": "^3.11.0",
+    "chalk": "^5.3.0",
+    "p-queue": "^8.0.1",
+    "cli-progress": "^3.12.0"
+  },
+  "devDependencies": {
+    "eslint": "^8.56.0"
+  },
+  "engines": {
+    "node": ">=16.0.0"
+  }
+}
