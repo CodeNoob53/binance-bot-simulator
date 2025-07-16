@@ -1,7 +1,7 @@
 import { getDatabase } from '../database/init.js';
 import { SymbolModel, SimulationResultModel, SimulationConfigModel } from '../database/models.js';
-import { NewListingScalperStrategy } from '../strategies/newListingScalper.js';
-import { TrailingStopLoss } from '../strategies/trailingStopLoss.js';
+import { NewListingScalperStrategy } from './strategies/newListingScalper.js';
+import { TrailingStopLoss } from './strategies/trailingStopLoss.js';
 import { validateConfig, validateMarketData } from '../utils/validators.js';
 import { calculateProfitLoss, calculateCommission, calculateLiquidity, calculateVolatility } from '../utils/calculations.js';
 import logger from '../utils/logger.js';

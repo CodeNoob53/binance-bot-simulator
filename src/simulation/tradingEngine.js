@@ -1,6 +1,6 @@
 import { EventEmitter } from 'events';
-import { NewListingScalperStrategy } from '../strategies/newListingScalper.js';
-import { TrailingStopLoss } from '../strategies/trailingStopLoss.js';
+import { NewListingScalperStrategy } from './strategies/newListingScalper.js';
+import { TrailingStopLoss } from './strategies/trailingStopLoss.js';
 import { validateTrade, validateOrderBook, validateMarketData } from '../utils/validators.js';
 import { calculateProfitLoss, calculateCommission } from '../utils/calculations.js';
 import logger from '../utils/logger.js';

@@ -18,11 +18,10 @@ const __dirname = dirname(__filename);
 import logger from './utils/logger.js';
 import { validateEnvironmentVariables } from './utils/validators.js';
 import { getDatabase, initializeDatabase } from './database/init.js';
-import { runMigrations } from './database/migrate.js';
 import { TradingEngine } from './simulation/tradingEngine.js';
 import { TradingSimulator } from './simulation/simulator.js';
-import { ParameterOptimizer } from './simulation/optimizer.js';
-import { NewListingScalperStrategy } from './strategies/newListingScalper.js';
+import { ParameterOptimizer } from './analysis/optimizer.js';
+import { NewListingScalperStrategy } from './simulation/strategies/newListingScalper.js';
 
 // Глобальні змінні
 let tradingEngine = null;

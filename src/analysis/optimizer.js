@@ -1,4 +1,4 @@
-import { TradingSimulator } from './simulator.js';
+import { TradingSimulator } from '../simulation/simulator.js';
 import { SimulationConfigModel } from '../database/models.js';
 import logger from '../utils/logger.js';
 
