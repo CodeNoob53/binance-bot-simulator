@@ -1,6 +1,7 @@
 import { TradingSimulator } from './simulator.js';
 import { SimulationConfigModel } from '../database/models.js';
 import logger from '../utils/logger.js';
+import fs from 'fs';
 
 export class ParameterOptimizer {
   constructor() {
@@ -337,7 +338,6 @@ export class ParameterOptimizer {
       exportDate: new Date().toISOString()
     };
     
-    const fs = require('fs');
     fs.writeFileSync(filename, JSON.stringify(data, null, 2));
     logger.info(`Optimization results exported to ${filename}`);
   }
