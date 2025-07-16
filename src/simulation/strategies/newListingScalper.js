@@ -1,5 +1,6 @@
 import { BaseStrategy } from './baseStrategy.js';
 import logger from '../../utils/logger.js';
+import { calculateLiquidity, calculateVolatility } from '../../utils/calculations.js';
 
 export class NewListingScalperStrategy extends BaseStrategy {
   constructor(config) {
@@ -7,233 +8,385 @@ export class NewListingScalperStrategy extends BaseStrategy {
     this.name = 'NewListingScalper';
     this.cooldowns = new Map();
     this.liquidityThreshold = config.minLiquidityUsdt || 10000;
+    this.volatilityThreshold = config.minVolatilityPercent || 2.0;
+    this.maxPriceImpact = config.maxPriceImpact || 0.5;
+    this.orderBookDepth = config.orderBookDepth || 10;
   }
-  
+
   /**
    * Перевірка умов входу для нового лістингу
    */
-  async checkEntryConditions(marketData) {
-    // 1. Перевірка що це новий лістинг (перша хвилина торгів)
+  async checkEntryConditions(marketData, priceData) {
+    const { symbol, ticker, orderBook, klines } = marketData;
+    
+    // 1. Перевірка що це новий лістинг
     if (!this.isNewListing(marketData)) {
       return { shouldEnter: false, reason: 'not_new_listing' };
     }
-    
+
     // 2. Перевірка cooldown
-    if (this.isOnCooldown(marketData.symbol)) {
+    if (this.isOnCooldown(symbol)) {
       return { shouldEnter: false, reason: 'cooldown_active' };
     }
-    
+
     // 3. Перевірка ліміту відкритих позицій
     if (this.activeTrades.size >= this.config.maxOpenTrades) {
       return { shouldEnter: false, reason: 'max_trades_reached' };
     }
-    
+
     // 4. Перевірка ліквідності
-    const liquidity = this.calculateLiquidity(marketData);
-    if (liquidity < this.liquidityThreshold) {
-      return { shouldEnter: false, reason: 'insufficient_liquidity', liquidity };
+    const liquidity = calculateLiquidity(orderBook, this.config.buyAmountUsdt);
+    if (liquidity.totalLiquidity < this.liquidityThreshold) {
+      return { 
+        shouldEnter: false, 
+        reason: 'insufficient_liquidity', 
+        liquidity: liquidity.totalLiquidity 
+      };
     }
-    
-    // 5. Перевірка волатильності (опціонально)
-    const volatility = this.calculateVolatility(marketData);
-    if (volatility < 0.01) { // Мінімум 1% волатильність
-      return { shouldEnter: false, reason: 'low_volatility', volatility };
+
+    // 5. Перевірка price impact
+    if (liquidity.priceImpact > this.maxPriceImpact) {
+      return { 
+        shouldEnter: false, 
+        reason: 'high_price_impact', 
+        priceImpact: liquidity.priceImpact 
+      };
     }
-    
-    return { shouldEnter: true, reason: 'all_conditions_met' };
-  }
-  
-  /**
-   * Розрахунок параметрів позиції з урахуванням специфіки нових лістингів
-   */
-  async calculatePositionParameters(marketData) {
-    const baseParams = await super.calculatePositionParameters(marketData);
-    
-    // Адаптивні параметри на основі початкової волатильності
-    const volatility = this.calculateVolatility(marketData);
-    const liquidityFactor = this.calculateLiquidityFactor(marketData);
-    
-    // Коригування TP/SL на основі ринкових умов
-    let tpMultiplier = 1.0;
-    let slMultiplier = 1.0;
-    
-    // Висока волатильність = ширші цілі
-    if (volatility > 0.05) { // > 5%
-      tpMultiplier = 1.2;
-      slMultiplier = 1.1;
-    } else if (volatility < 0.02) { // < 2%
-      tpMultiplier = 0.8;
-      slMultiplier = 0.9;
+
+    // 6. Перевірка волатильності
+    const volatility = calculateVolatility(klines);
+    if (volatility < this.volatilityThreshold) {
+      return { 
+        shouldEnter: false, 
+        reason: 'low_volatility', 
+        volatility 
+      };
     }
-    
-    // Низька ліквідність = консервативніші цілі
-    if (liquidityFactor < 0.5) {
-      tpMultiplier *= 0.8;
-      slMultiplier *= 0.9;
+
+    // 7. Перевірка технічних індикаторів
+    const technicalSignal = this.analyzeTechnicalIndicators(klines, ticker);
+    if (!technicalSignal.bullish) {
+      return { 
+        shouldEnter: false, 
+        reason: 'bearish_signal', 
+        signal: technicalSignal 
+      };
     }
-    
-    const adjustedTpPercent = this.config.takeProfitPercent * tpMultiplier;
-    const adjustedSlPercent = this.config.stopLossPercent * slMultiplier;
-    
-    const feeAdjustment = 2 * this.config.binanceFeePercent;
-    
-    return {
-      ...baseParams,
-      tpPrice: baseParams.entryPrice * (1 + adjustedTpPercent + feeAdjustment),
-      slPrice: baseParams.entryPrice * (1 - adjustedSlPercent - feeAdjustment),
-      metadata: {
+
+    // 8. Перевірка моментуму
+    const momentum = this.analyzeMomentum(klines, ticker);
+    if (!momentum.positive) {
+      return { 
+        shouldEnter: false, 
+        reason: 'negative_momentum', 
+        momentum 
+      };
+    }
+
+    return { 
+      shouldEnter: true, 
+      reason: 'all_conditions_met',
+      metrics: {
+        liquidity: liquidity.totalLiquidity,
+        priceImpact: liquidity.priceImpact,
         volatility,
-        liquidityFactor,
-        tpMultiplier,
-        slMultiplier
+        technicalSignal,
+        momentum
       }
     };
   }
-  
-  /**
-   * Специфічні умови виходу для скальпінгу
-   */
-  async checkExitConditions(trade, marketData) {
-    // Базові умови виходу
-    const baseExit = await super.checkExitConditions(trade, marketData);
-    if (baseExit.shouldExit) {
-      return baseExit;
-    }
-    
-    // Додаткові умови для скальпінгу
-    
-    // 1. Швидкий вихід при різкому падінні об'єму
-    const volumeDropThreshold = 0.2; // 80% падіння об'єму
-    if (this.hasVolumeDropped(trade, marketData, volumeDropThreshold)) {
-      return {
-        shouldExit: true,
-        exitPrice: marketData.price,
-        reason: 'volume_drop'
-      };
-    }
-    
-    // 2. Вихід при стагнації ціни
-    if (this.isPriceStagnant(trade, marketData)) {
-      return {
-        shouldExit: true,
-        exitPrice: marketData.price,
-        reason: 'price_stagnation'
-      };
-    }
-    
-    return { shouldExit: false };
-  }
-  
+
   /**
    * Перевірка чи це новий лістинг
    */
   isNewListing(marketData) {
-    // В симуляції вважаємо новим лістингом перші 5 хвилин
-    return marketData.isFirstKline || marketData.minutesSinceListing < 5;
+    const { listingDate, currentTime } = marketData;
+    const timeSinceListing = currentTime - listingDate;
+    
+    // Новий лістинг якщо пройшло менше 10 хвилин
+    return timeSinceListing < (10 * 60 * 1000);
   }
-  
+
   /**
-   * Перевірка cooldown для символу
+   * Перевірка cooldown
    */
   isOnCooldown(symbol) {
     const cooldownEnd = this.cooldowns.get(symbol);
-    return cooldownEnd && Date.now() < cooldownEnd;
-  }
-  
-  /**
-   * Встановлення cooldown після торгівлі
-   */
-  setCooldown(symbol) {
-    const cooldownEnd = Date.now() + (this.config.cooldownSeconds * 1000);
-    this.cooldowns.set(symbol, cooldownEnd);
-  }
-  
-  /**
-   * Розрахунок ліквідності на основі об'єму
-   */
-  calculateLiquidity(marketData) {
-    // Використовуємо quote asset volume як показник ліквідності
-    return marketData.quoteAssetVolume || 0;
-  }
-  
-  /**
-   * Розрахунок фактору ліквідності (0-1)
-   */
-  calculateLiquidityFactor(marketData) {
-    const liquidity = this.calculateLiquidity(marketData);
-    const optimalLiquidity = this.liquidityThreshold * 5; // 5x мінімуму вважаємо оптимальним
+    if (!cooldownEnd) return false;
     
-    return Math.min(liquidity / optimalLiquidity, 1);
-  }
-  
-  /**
-   * Розрахунок волатильності
-   */
-  calculateVolatility(marketData) {
-    if (!marketData.high || !marketData.low || marketData.low === 0) {
-      return 0;
-    }
-    
-    return (marketData.high - marketData.low) / marketData.low;
-  }
-  
-  /**
-   * Перевірка падіння об'єму
-   */
-  hasVolumeDropped(trade, marketData, threshold) {
-    if (!trade.initialVolume) {
-      trade.initialVolume = marketData.volume;
-      return false;
-    }
-    
-    const volumeRatio = marketData.volume / trade.initialVolume;
-    return volumeRatio < (1 - threshold);
-  }
-  
-  /**
-   * Перевірка стагнації ціни
-   */
-  isPriceStagnant(trade, marketData) {
-    const holdTime = marketData.timestamp - trade.entryTime;
-    const priceChange = Math.abs(marketData.price - trade.entryPrice) / trade.entryPrice;
-    
-    // Якщо за 30 хвилин ціна змінилась менше ніж на 1%
-    if (holdTime > 30 * 60 * 1000 && priceChange < 0.01) {
+    const now = Date.now();
+    if (now < cooldownEnd) {
       return true;
     }
     
+    this.cooldowns.delete(symbol);
     return false;
   }
-  
+
   /**
-   * Перевизначення входу в позицію з додатковою логікою
+   * Встановлення cooldown
    */
-  async enterPosition(marketData) {
-    const result = await super.enterPosition(marketData);
-    
-    if (result.success) {
-      // Встановлюємо cooldown для символу
-      this.setCooldown(marketData.symbol);
-      
-      // Зберігаємо додаткові метадані
-      result.trade.initialVolume = marketData.volume;
-      result.trade.listingTime = marketData.listingTime;
-    }
-    
-    return result;
+  setCooldown(symbol, seconds = null) {
+    const cooldownSeconds = seconds || this.config.cooldownSeconds || 300;
+    const cooldownEnd = Date.now() + (cooldownSeconds * 1000);
+    this.cooldowns.set(symbol, cooldownEnd);
   }
-  
+
   /**
-   * Розширені метрики
+   * Аналіз технічних індикаторів
    */
-  getMetrics() {
-    const baseMetrics = super.getMetrics();
-    
-    // Додаткові метрики для скальпінгу
-    const trades = Array.from(this.activeTrades.values());
-    const avgHoldTime = trades.length > 0
-      ? trades.reduce((sum, t) => sum + (Date.now() - t.entryTime), 0) / trades.length / 1000
-      : 0;
-    
+  analyzeTechnicalIndicators(klines, ticker) {
+    if (!klines || klines.length < 5) {
+      return { bullish: false, reason: 'insufficient_data' };
+    }
+
+    const prices = klines.map(k => parseFloat(k.close));
+    const volumes = klines.map(k => parseFloat(k.volume));
+    const currentPrice = parseFloat(ticker.price);
+
+    // RSI
+    const rsi = this.calculateRSI(prices);
+    const rsiSignal = rsi > 30 && rsi < 70; // Не перекуплено/перепродано
+
+    // EMA
+    const ema5 = this.calculateEMA(prices, 5);
+    const emaSignal = currentPrice > ema5;
+
+    // Volume
+    const avgVolume = volumes.reduce((a, b) => a + b, 0) / volumes.length;
+    const currentVolume = volumes[volumes.length - 1];
+    const volumeSignal = currentVolume > avgVolume * 1.5;
+
+    // Price action
+    const priceAction = this.analyzePriceAction(klines);
+
+    const bullish = rsiSignal && emaSignal && volumeSignal && priceAction.bullish;
+
     return {
-      
+      bullish,
+      rsi,
+      rsiSignal,
+      emaSignal,
+      volumeSignal,
+      priceAction,
+      confidence: this.calculateConfidence([rsiSignal, emaSignal, volumeSignal, priceAction.bullish])
+    };
+  }
+
+  /**
+   * Аналіз моментуму
+   */
+  analyzeMomentum(klines, ticker) {
+    if (!klines || klines.length < 3) {
+      return { positive: false, reason: 'insufficient_data' };
+    }
+
+    const prices = klines.map(k => parseFloat(k.close));
+    const currentPrice = parseFloat(ticker.price);
+
+    // Momentum indicators
+    const priceChange = ((currentPrice - prices[0]) / prices[0]) * 100;
+    const recentChange = ((prices[prices.length - 1] - prices[prices.length - 2]) / prices[prices.length - 2]) * 100;
+
+    // MACD
+    const macd = this.calculateMACD(prices);
+    const macdSignal = macd && macd.histogram > 0;
+
+    // Volume momentum
+    const volumes = klines.map(k => parseFloat(k.volume));
+    const volumeMomentum = volumes[volumes.length - 1] > volumes[volumes.length - 2];
+
+    const positive = priceChange > 0 && recentChange > 0 && macdSignal && volumeMomentum;
+
+    return {
+      positive,
+      priceChange,
+      recentChange,
+      macdSignal,
+      volumeMomentum,
+      strength: Math.abs(priceChange) + Math.abs(recentChange)
+    };
+  }
+
+  /**
+   * Аналіз price action
+   */
+  analyzePriceAction(klines) {
+    const lastCandle = klines[klines.length - 1];
+    const prevCandle = klines[klines.length - 2];
+
+    const open = parseFloat(lastCandle.open);
+    const high = parseFloat(lastCandle.high);
+    const low = parseFloat(lastCandle.low);
+    const close = parseFloat(lastCandle.close);
+
+    // Тип свічки
+    const isBullish = close > open;
+    const bodySize = Math.abs(close - open);
+    const shadowSize = (high - Math.max(open, close)) + (Math.min(open, close) - low);
+    const bodyRatio = bodySize / (bodySize + shadowSize);
+
+    // Паттерни
+    const isDoji = bodySize < (high - low) * 0.1;
+    const isHammer = !isDoji && bodyRatio > 0.6 && (Math.min(open, close) - low) > bodySize * 2;
+    const isEngulfing = isBullish && prevCandle && close > parseFloat(prevCandle.open) && open < parseFloat(prevCandle.close);
+
+    return {
+      bullish: isBullish && (bodyRatio > 0.5 || isHammer || isEngulfing),
+      isBullish,
+      bodyRatio,
+      isDoji,
+      isHammer,
+      isEngulfing,
+      strength: bodyRatio * (isBullish ? 1 : -1)
+    };
+  }
+
+  /**
+   * Розрахунок RSI
+   */
+  calculateRSI(prices, period = 14) {
+    if (prices.length < period + 1) return 50;
+
+    const gains = [];
+    const losses = [];
+
+    for (let i = 1; i < prices.length; i++) {
+      const change = prices[i] - prices[i - 1];
+      gains.push(change > 0 ? change : 0);
+      losses.push(change < 0 ? -change : 0);
+    }
+
+    const avgGain = gains.slice(-period).reduce((a, b) => a + b, 0) / period;
+    const avgLoss = losses.slice(-period).reduce((a, b) => a + b, 0) / period;
+
+    if (avgLoss === 0) return 100;
+
+    const rs = avgGain / avgLoss;
+    return 100 - (100 / (1 + rs));
+  }
+
+  /**
+   * Розрахунок EMA
+   */
+  calculateEMA(prices, period) {
+    if (prices.length < period) return prices[prices.length - 1];
+
+    const multiplier = 2 / (period + 1);
+    let ema = prices.slice(0, period).reduce((a, b) => a + b, 0) / period;
+
+    for (let i = period; i < prices.length; i++) {
+      ema = (prices[i] - ema) * multiplier + ema;
+    }
+
+    return ema;
+  }
+
+  /**
+   * Розрахунок MACD
+   */
+  calculateMACD(prices) {
+    if (prices.length < 26) return null;
+
+    const ema12 = this.calculateEMA(prices, 12);
+    const ema26 = this.calculateEMA(prices, 26);
+    const macdLine = ema12 - ema26;
+
+    // Простий сигнал - якщо MACD > 0
+    return {
+      macdLine,
+      signal: macdLine > 0,
+      histogram: macdLine // Спрощено
+    };
+  }
+
+  /**
+   * Розрахунок рівня впевненості
+   */
+  calculateConfidence(signals) {
+    const trueCount = signals.filter(s => s).length;
+    return (trueCount / signals.length) * 100;
+  }
+
+  /**
+   * Виконання покупки
+   */
+  async executeBuy(marketData) {
+    const { symbol, ticker, orderBook } = marketData;
+    const currentPrice = parseFloat(ticker.price);
+    const quantity = this.config.buyAmountUsdt / currentPrice;
+
+    try {
+      // Імітуємо покупку для симуляції
+      const trade = {
+        symbol,
+        side: 'BUY',
+        type: 'MARKET',
+        quantity,
+        price: currentPrice,
+        timestamp: Date.now(),
+        commission: this.config.buyAmountUsdt * (this.config.binanceFeePercent / 100)
+      };
+
+      // Встановлюємо cooldown
+      this.setCooldown(symbol);
+
+      logger.info(`NewListingScalper: BUY ${symbol} at ${currentPrice} USDT`);
+
+      return {
+        success: true,
+        trade,
+        entryPrice: currentPrice,
+        quantity,
+        commission: trade.commission
+      };
+
+    } catch (error) {
+      logger.error(`NewListingScalper: Error executing buy for ${symbol}: ${error.message}`);
+      return {
+        success: false,
+        error: error.message
+      };
+    }
+  }
+
+  /**
+   * Отримання умов виходу
+   */
+  getExitConditions(entryPrice, config) {
+    const takeProfitPrice = entryPrice * (1 + config.takeProfitPercent / 100);
+    const stopLossPrice = entryPrice * (1 - config.stopLossPercent / 100);
+    const trailingStopActivationPrice = entryPrice * (1 + config.trailingStopActivationPercent / 100);
+
+    return {
+      takeProfitPrice,
+      stopLossPrice,
+      trailingStopActivationPrice,
+      trailingStopEnabled: config.trailingStopEnabled,
+      trailingStopPercent: config.trailingStopPercent
+    };
+  }
+
+  /**
+   * Скидання стану стратегії
+   */
+  reset() {
+    this.cooldowns.clear();
+    this.activeTrades.clear();
+  }
+
+  /**
+   * Отримання статистики стратегії
+   */
+  getStats() {
+    return {
+      name: this.name,
+      activeTrades: this.activeTrades.size,
+      cooldowns: this.cooldowns.size,
+      liquidityThreshold: this.liquidityThreshold,
+      volatilityThreshold: this.volatilityThreshold
+    };
+  }
+}
+
+export default NewListingScalperStrategy;
