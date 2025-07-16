@@ -1,0 +1,128 @@
+import { getDatabase } from '../database/init.js';
+import logger from '../utils/logger.js';
+
+export class ConfigurationGenerator {
+  constructor() {
+    this.db = getDatabase();
+  }
+  
+  async generateConfigurations() {
+    logger.info('Generating simulation configurations...');
+    
+    const configs = [];
+    
+    // Базові параметри
+    const baseParams = {
+      maxOpenTrades: 3,
+      minLiquidityUsdt: 10000,
+      binanceFeePercent: 0.00075,
+      cooldownSeconds: 3600
+    };
+    
+    // Варіації параметрів
+    const variations = {
+      takeProfitPercent: [0.05, 0.10, 0.15, 0.20, 0.25, 0.30, 0.40],
+      stopLossPercent: [0.05, 0.08, 0.10, 0.12, 0.15],
+      buyAmountUsdt: [25, 50, 100, 200],
+      trailingStop: [
+        { enabled: false },
+        { enabled: true, percent: 0.03, activation: 0.05 },
+        { enabled: true, percent: 0.05, activation: 0.10 },
+        { enabled: true, percent: 0.08, activation: 0.15 },
+        { enabled: true, percent: 0.10, activation: 0.20 }
+      ]
+    };
+    
+    // Генеруємо всі комбінації
+    for (const tp of variations.takeProfitPercent) {
+      for (const sl of variations.stopLossPercent) {
+        // Stop loss має бути менше take profit
+        if (sl >= tp) continue;
+        
+        for (const amount of variations.buyAmountUsdt) {
+          for (const trailing of variations.trailingStop) {
+            const config = {
+              ...baseParams,
+              takeProfitPercent: tp,
+              stopLossPercent: sl,
+              buyAmountUsdt: amount,
+              trailingStopEnabled: trailing.enabled ? 1 : 0,
+              trailingStopPercent: trailing.percent || null,
+              trailingStopActivationPercent: trailing.activation || null
+            };
+            
+            // Генеруємо ім'я конфігурації
+            let name = `TP${(tp * 100).toFixed(0)}_SL${(sl * 100).toFixed(0)}_${amount}USDT`;
+            if (trailing.enabled) {
+              name += `_TS${(trailing.percent * 100).toFixed(0)}_A${(trailing.activation * 100).toFixed(0)}`;
+            }
+            
+            config.name = name;
+            configs.push(config);
+          }
+        }
+      }
+    }
+    
+    logger.info(`Generated ${configs.length} configurations`);
+    
+    // Зберігаємо в БД
+    await this.saveConfigurations(configs);
+    
+    return configs;
+  }
+  
+  async saveConfigurations(configs) {
+    const stmt = this.db.prepare(`
+      INSERT OR IGNORE INTO simulation_configs (
+        name, take_profit_percent, stop_loss_percent,
+        trailing_stop_enabled, trailing_stop_percent, trailing_stop_activation_percent,
+        buy_amount_usdt, max_open_trades, min_liquidity_usdt,
+        binance_fee_percent, cooldown_seconds
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    
+    const insertMany = this.db.transaction((configs) => {
+      for (const config of configs) {
+        stmt.run(
+          config.name,
+          config.takeProfitPercent,
+          config.stopLossPercent,
+          config.trailingStopEnabled,
+          config.trailingStopPercent,
+          config.trailingStopActivationPercent,
+          config.buyAmountUsdt,
+          config.maxOpenTrades,
+          config.minLiquidityUsdt,
+          config.binanceFeePercent,
+          config.cooldownSeconds
+        );
+      }
+    });
+    
+    insertMany(configs);
+    logger.info(`Saved ${configs.length} configurations to database`);
+  }
+  
+  async getConfigurations() {
+    return this.db.prepare(`
+      SELECT * FROM simulation_configs
+      ORDER BY id
+    `).all();
+  }
+  
+  async getOptimizedConfigurations(limit = 10) {
+    // Отримуємо топ конфігурації на основі попередніх симуляцій
+    return this.db.prepare(`
+      SELECT 
+        sc.*,
+        ss.roi_percent,
+        ss.win_rate_percent,
+        ss.sharpe_ratio
+      FROM simulation_configs sc
+      LEFT JOIN simulation_summary ss ON sc.id = ss.config_id
+      ORDER BY ss.roi_percent DESC NULLS LAST
+      LIMIT ?
+    `).all(limit);
+  }
+}
