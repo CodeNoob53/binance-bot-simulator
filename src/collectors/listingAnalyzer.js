@@ -7,7 +7,7 @@ import { sleep } from '../utils/helpers.js';
 export class ListingAnalyzer {
   constructor() {
     this.binanceClient = getBinanceClient();
-    this.db = getDatabase();
+    this.dbPromise = getDatabase();
     this.workersCount = parseInt(process.env.WORKERS_COUNT) || 10;
   }
   
@@ -88,24 +88,29 @@ export class ListingAnalyzer {
   }
   
   async saveListingAnalysis(symbolId, listingDate, status, errorMessage = null) {
-    const stmt = this.db.prepare(`
-      INSERT OR REPLACE INTO listing_analysis 
-      (symbol_id, listing_date, data_status, error_message, analysis_date)
-      VALUES (?, ?, ?, ?, ?)
-    `);
-    
-    stmt.run(symbolId, listingDate, status, errorMessage, Date.now());
+    const db = await this.dbPromise;
+    await db.run(
+      `INSERT OR REPLACE INTO listing_analysis
+       (symbol_id, listing_date, data_status, error_message, analysis_date)
+       VALUES (?, ?, ?, ?, ?)`,
+      symbolId,
+      listingDate,
+      status,
+      errorMessage,
+      Date.now()
+    );
   }
-  
+
   async getSymbolsForAnalysis() {
-    return this.db.prepare(`
-      SELECT s.* 
+    const db = await this.dbPromise;
+    return db.all(`
+      SELECT s.*
       FROM symbols s
       LEFT JOIN listing_analysis la ON s.id = la.symbol_id
       WHERE s.status = 'active'
       AND s.quote_asset = 'USDT'
       AND (la.id IS NULL OR (la.data_status = 'error' AND la.retry_count < 3))
       ORDER BY s.id
-    `).all();
+    `);
   }
 }

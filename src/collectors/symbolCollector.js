@@ -5,7 +5,7 @@ import logger from '../utils/logger.js';
 export class SymbolCollector {
   constructor() {
     this.binanceClient = getBinanceClient();
-    this.db = getDatabase();
+    this.dbPromise = getDatabase();
   }
   
   async collectAllUSDTSymbols() {
@@ -29,14 +29,12 @@ export class SymbolCollector {
       logger.info(`Found ${usdtSymbols.length} active USDT trading pairs`);
       
       // Зберігаємо в БД
-      const stmt = this.db.prepare(`
-        INSERT OR REPLACE INTO symbols (symbol, base_asset, quote_asset, status, updated_at)
-        VALUES (?, ?, ?, ?, ?)
-      `);
-      
-      const insertMany = this.db.transaction((symbols) => {
-        for (const symbolData of symbols) {
-          stmt.run(
+      const db = await this.dbPromise;
+      await db.exec('BEGIN');
+      try {
+        for (const symbolData of usdtSymbols) {
+          await db.run(
+            `INSERT OR REPLACE INTO symbols (symbol, base_asset, quote_asset, status, updated_at) VALUES (?, ?, ?, ?, ?)`,
             symbolData.symbol,
             symbolData.baseAsset,
             symbolData.quoteAsset,
@@ -44,9 +42,11 @@ export class SymbolCollector {
             Date.now()
           );
         }
-      });
-      
-      insertMany(usdtSymbols);
+        await db.exec('COMMIT');
+      } catch (err) {
+        await db.exec('ROLLBACK');
+        throw err;
+      }
       
       logger.info(`Saved ${usdtSymbols.length} symbols to database`);
       return usdtSymbols.length;
@@ -59,18 +59,18 @@ export class SymbolCollector {
   
   async getSymbolsForAnalysis(limit = null) {
     let query = `
-      SELECT s.* 
+      SELECT s.*
       FROM symbols s
       LEFT JOIN listing_analysis la ON s.id = la.symbol_id
-      WHERE s.status = 'active' 
+      WHERE s.status = 'active'
       AND s.quote_asset = 'USDT'
       AND (la.id IS NULL OR la.data_status = 'error')
     `;
-    
+
     if (limit) {
       query += ` LIMIT ${limit}`;
     }
-    
-    return this.db.prepare(query).all();
+    const db = await this.dbPromise;
+    return db.all(query);
   }
 }

@@ -4,7 +4,7 @@ import { formatPercent, formatUSDT, formatDuration } from '../utils/helpers.js';
 
 export class ReportGenerator {
   constructor() {
-    this.db = getDatabase();
+    this.dbPromise = getDatabase();
   }
   
   async generateFullReport(analysisData) {
@@ -43,8 +43,9 @@ export class ReportGenerator {
   }
   
   async getDataRange() {
-    const range = this.db.prepare(`
-      SELECT 
+    const db = await this.dbPromise;
+    const range = await db.get(`
+      SELECT
         MIN(la.listing_date) as earliest_listing,
         MAX(la.listing_date) as latest_listing,
         COUNT(DISTINCT s.id) as total_symbols,
@@ -53,7 +54,7 @@ export class ReportGenerator {
       JOIN symbols s ON la.symbol_id = s.id
       LEFT JOIN simulation_results sr ON s.id = sr.symbol_id
       WHERE la.data_status = 'analyzed'
-    `).get();
+    `);
     
     return {
       earliestListing: new Date(range.earliest_listing).toISOString(),
@@ -176,8 +177,9 @@ export class ReportGenerator {
   }
   
   async findOptimalConfiguration() {
-    return this.db.prepare(`
-      SELECT 
+    const db = await this.dbPromise;
+    return db.get(`
+      SELECT
         sc.*,
         ss.roi_percent,
         ss.win_rate_percent,
@@ -194,7 +196,7 @@ export class ReportGenerator {
          (100 - ss.max_drawdown_percent) * 0.2 +
          COALESCE(ss.sharpe_ratio * 10, 0) * 0.1) DESC
       LIMIT 1
-    `).get();
+    `);
   }
   
   calculateConfidence(config) {

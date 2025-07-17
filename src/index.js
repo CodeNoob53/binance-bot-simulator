@@ -17,7 +17,7 @@ const __dirname = dirname(__filename);
 // Імпорти основних модулів
 import logger from './utils/logger.js';
 import { validateEnvironmentVariables } from './utils/validators.js';
-import { getDatabase, initializeDatabase } from './database/init.js';
+import { getDatabase, initializeDatabase, closeDatabase } from './database/init.js';
 import { TradingEngine } from './simulation/tradingEngine.js';
 import { TradingSimulator } from './simulation/simulator.js';
 import { ParameterOptimizer } from './analysis/optimizer.js';
@@ -268,21 +268,21 @@ async function startBacktestMode() {
  */
 async function showStatus() {
   try {
-    const db = getDatabase();
+    const db = await getDatabase();
     
     // Інформація про базу даних
-    const symbolsCount = db.prepare('SELECT COUNT(*) as count FROM symbols').get().count;
-    const configsCount = db.prepare('SELECT COUNT(*) as count FROM simulation_configs').get().count;
-    const resultsCount = db.prepare('SELECT COUNT(*) as count FROM simulation_results').get().count;
+    const symbolsCount = (await db.get('SELECT COUNT(*) as count FROM symbols')).count;
+    const configsCount = (await db.get('SELECT COUNT(*) as count FROM simulation_configs')).count;
+    const resultsCount = (await db.get('SELECT COUNT(*) as count FROM simulation_results')).count;
     
     // Останні результати
-    const latestResults = db.prepare(`
+    const latestResults = await db.all(`
       SELECT sc.name, ss.roi_percent, ss.win_rate_percent, ss.total_trades
       FROM simulation_summary ss
       JOIN simulation_configs sc ON ss.config_id = sc.id
       ORDER BY ss.simulation_date DESC
       LIMIT 5
-    `).all();
+    `);
     
     console.log(`
 📊 СИСТЕМНИЙ СТАТУС
@@ -515,11 +515,7 @@ async function gracefulShutdown(signal) {
     }
     
     // Закриття з'єднання з БД
-    const db = getDatabase();
-    if (db) {
-      db.close();
-      logger.info('✅ Database connection closed');
-    }
+    await closeDatabase();
     
     logger.info('✅ Graceful shutdown completed');
     process.exit(0);

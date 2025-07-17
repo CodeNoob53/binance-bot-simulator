@@ -14,7 +14,7 @@ async function main() {
   try {
     // Ініціалізація БД
     console.log(chalk.yellow('📊 Initializing database...'));
-    initializeDatabase();
+    await initializeDatabase();
     
     // Етап 1: Збір символів
     console.log(chalk.yellow('\n📋 Stage 1: Collecting USDT symbols...'));
@@ -54,18 +54,18 @@ async function main() {
 
 async function getCollectionStats() {
   const { getDatabase } = await import('../src/database/init.js');
-  const db = getDatabase();
+  const db = await getDatabase();
   
   const stats = {
-    totalSymbols: db.prepare('SELECT COUNT(*) as count FROM symbols').get().count,
-    analyzedListings: db.prepare('SELECT COUNT(*) as count FROM listing_analysis WHERE data_status = "analyzed"').get().count,
-    newListings: db.prepare(`
-      SELECT COUNT(*) as count 
-      FROM listing_analysis 
-      WHERE data_status = "analyzed" 
+    totalSymbols: (await db.get('SELECT COUNT(*) as count FROM symbols')).count,
+    analyzedListings: (await db.get('SELECT COUNT(*) as count FROM listing_analysis WHERE data_status = "analyzed"')).count,
+    newListings: (await db.get(`
+      SELECT COUNT(*) as count
+      FROM listing_analysis
+      WHERE data_status = "analyzed"
       AND listing_date >= ?
-    `).get(Date.now() - (180 * 24 * 60 * 60 * 1000)).count,
-    totalKlines: db.prepare('SELECT COUNT(*) as count FROM historical_klines').get().count
+    `, Date.now() - (180 * 24 * 60 * 60 * 1000))).count,
+    totalKlines: (await db.get('SELECT COUNT(*) as count FROM historical_klines')).count
   };
   
   return stats;
@@ -73,3 +73,4 @@ async function getCollectionStats() {
 
 // Запуск
 main().catch(console.error);
+
