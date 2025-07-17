@@ -108,7 +108,21 @@ export class ConfigurationGenerator {
   async getConfigurations() {
     const db = await this.dbPromise;
     return db.all(`
-      SELECT * FROM simulation_configs
+      SELECT
+        id,
+        name,
+        take_profit_percent AS takeProfitPercent,
+        stop_loss_percent AS stopLossPercent,
+        trailing_stop_enabled AS trailingStopEnabled,
+        trailing_stop_percent AS trailingStopPercent,
+        trailing_stop_activation_percent AS trailingStopActivationPercent,
+        buy_amount_usdt AS buyAmountUsdt,
+        max_open_trades AS maxOpenTrades,
+        min_liquidity_usdt AS minLiquidityUsdt,
+        binance_fee_percent AS binanceFeePercent,
+        cooldown_seconds AS cooldownSeconds,
+        created_at AS createdAt
+      FROM simulation_configs
       ORDER BY id
     `);
   }
@@ -118,10 +132,22 @@ export class ConfigurationGenerator {
     const db = await this.dbPromise;
     return db.all(`
       SELECT
-        sc.*,
-        ss.roi_percent,
-        ss.win_rate_percent,
-        ss.sharpe_ratio
+        sc.id,
+        sc.name,
+        sc.take_profit_percent AS takeProfitPercent,
+        sc.stop_loss_percent AS stopLossPercent,
+        sc.trailing_stop_enabled AS trailingStopEnabled,
+        sc.trailing_stop_percent AS trailingStopPercent,
+        sc.trailing_stop_activation_percent AS trailingStopActivationPercent,
+        sc.buy_amount_usdt AS buyAmountUsdt,
+        sc.max_open_trades AS maxOpenTrades,
+        sc.min_liquidity_usdt AS minLiquidityUsdt,
+        sc.binance_fee_percent AS binanceFeePercent,
+        sc.cooldown_seconds AS cooldownSeconds,
+        sc.created_at AS createdAt,
+        ss.roi_percent AS roiPercent,
+        ss.win_rate_percent AS winRatePercent,
+        ss.sharpe_ratio AS sharpeRatio
       FROM simulation_configs sc
       LEFT JOIN simulation_summary ss ON sc.id = ss.config_id
       ORDER BY ss.roi_percent DESC NULLS LAST
