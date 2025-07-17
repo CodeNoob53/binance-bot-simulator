@@ -15,12 +15,12 @@ async function main() {
   try {
     // Ініціалізація БД
     console.log(chalk.yellow('📊 Initializing database...'));
-    initializeDatabase();
-    const db = getDatabase();
+    await initializeDatabase();
+    const db = await getDatabase();
     
     // Перевірка наявності даних
-    const symbolCount = db.prepare('SELECT COUNT(*) as count FROM symbols').get().count;
-    const klineCount = db.prepare('SELECT COUNT(*) as count FROM historical_klines').get().count;
+    const symbolCount = (await db.get('SELECT COUNT(*) as count FROM symbols')).count;
+    const klineCount = (await db.get('SELECT COUNT(*) as count FROM historical_klines')).count;
     
     if (symbolCount === 0 || klineCount === 0) {
       console.log(chalk.red('\n❌ No data found! Please run data collection first:'));
@@ -98,18 +98,18 @@ async function runSimulations(configs) {
 }
 
 async function saveSimulationSummaries(results) {
-  const db = getDatabase();
-  const stmt = db.prepare(`
+  const db = await getDatabase();
+  const stmtSql = `
     INSERT INTO simulation_summary (
       config_id, total_trades, profitable_trades, losing_trades, timeout_trades,
       trailing_stop_trades, total_profit_usdt, total_loss_usdt, net_profit_usdt,
       win_rate_percent, avg_profit_percent, avg_loss_percent, max_profit_percent,
       max_loss_percent, avg_trade_duration_minutes, total_simulation_period_days,
       roi_percent, sharpe_ratio, max_drawdown_percent
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `);
-  
-  const insertMany = db.transaction((results) => {
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+
+  await db.exec('BEGIN');
+  try {
     for (const { config, result } of results) {
       if (result.error) continue;
       
@@ -119,7 +119,8 @@ async function saveSimulationSummaries(results) {
       const avgLossPercent = result.losingTrades > 0 ?
         result.totalLossUsdt / result.losingTrades / config.buyAmountUsdt * 100 : 0;
       
-      stmt.run(
+      await db.run(
+        stmtSql,
         config.id,
         result.totalTrades,
         result.profitableTrades,
@@ -141,9 +142,11 @@ async function saveSimulationSummaries(results) {
         result.maxDrawdown
       );
     }
-  });
-  
-  insertMany(results);
+    await db.exec('COMMIT');
+  } catch (err) {
+    await db.exec('ROLLBACK');
+    throw err;
+  }
 }
 
 function displayTopResults(results, limit = 10) {

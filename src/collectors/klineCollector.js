@@ -7,7 +7,7 @@ import { sleep } from '../utils/helpers.js';
 export class KlineCollector {
   constructor() {
     this.binanceClient = getBinanceClient();
-    this.db = getDatabase();
+    this.dbPromise = getDatabase();
     this.workersCount = parseInt(process.env.WORKERS_COUNT) || 10;
   }
   
@@ -69,43 +69,44 @@ export class KlineCollector {
   }
   
   async saveKlines(symbolId, klines, batchSize = 1000) {
-    const stmt = this.db.prepare(`
-      INSERT OR IGNORE INTO historical_klines (
-        symbol_id, open_time, close_time, open_price, high_price, low_price,
-        close_price, volume, quote_asset_volume, number_of_trades,
-        taker_buy_base_asset_volume, taker_buy_quote_asset_volume
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `);
-    
-    const insertBatch = this.db.transaction((batch) => {
-      for (const kline of batch) {
-        stmt.run(
-          symbolId,
-          kline[0],  // open_time
-          kline[6],  // close_time
-          parseFloat(kline[1]),  // open_price
-          parseFloat(kline[2]),  // high_price
-          parseFloat(kline[3]),  // low_price
-          parseFloat(kline[4]),  // close_price
-          parseFloat(kline[5]),  // volume
-          parseFloat(kline[7]),  // quote_asset_volume
-          kline[8],             // number_of_trades
-          parseFloat(kline[9]),  // taker_buy_base_asset_volume
-          parseFloat(kline[10]) // taker_buy_quote_asset_volume
-        );
-      }
-    });
-    
-    // Розбиваємо на батчі
+    const db = await this.dbPromise;
     for (let i = 0; i < klines.length; i += batchSize) {
       const batch = klines.slice(i, i + batchSize);
-      insertBatch(batch);
+      await db.exec('BEGIN');
+      try {
+        for (const kline of batch) {
+          await db.run(
+            `INSERT OR IGNORE INTO historical_klines (
+              symbol_id, open_time, close_time, open_price, high_price, low_price,
+              close_price, volume, quote_asset_volume, number_of_trades,
+              taker_buy_base_asset_volume, taker_buy_quote_asset_volume
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            symbolId,
+            kline[0],
+            kline[6],
+            parseFloat(kline[1]),
+            parseFloat(kline[2]),
+            parseFloat(kline[3]),
+            parseFloat(kline[4]),
+            parseFloat(kline[5]),
+            parseFloat(kline[7]),
+            kline[8],
+            parseFloat(kline[9]),
+            parseFloat(kline[10])
+          );
+        }
+        await db.exec('COMMIT');
+      } catch (err) {
+        await db.exec('ROLLBACK');
+        throw err;
+      }
     }
   }
-  
+
   async getNewListings(cutoffDate) {
-    return this.db.prepare(`
-      SELECT 
+    const db = await this.dbPromise;
+    return db.all(`
+      SELECT
         s.id as symbol_id,
         s.symbol,
         la.listing_date
@@ -119,6 +120,7 @@ export class KlineCollector {
         LIMIT 1
       )
       ORDER BY la.listing_date DESC
-    `).all(cutoffDate);
+    `,
+    cutoffDate);
   }
 }

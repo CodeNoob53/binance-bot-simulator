@@ -11,10 +11,10 @@ async function main() {
   console.log(chalk.cyan('\n📊 Analyzing simulation results...\n'));
   
   try {
-    const db = getDatabase();
+    const db = await getDatabase();
     
     // Перевірка наявності результатів
-    const resultCount = db.prepare('SELECT COUNT(*) as count FROM simulation_results').get().count;
+    const resultCount = (await db.get('SELECT COUNT(*) as count FROM simulation_results')).count;
     if (resultCount === 0) {
       console.log(chalk.red('\n❌ No simulation results found! Please run simulation first:'));
       console.log(chalk.white('   npm run simulate\n'));

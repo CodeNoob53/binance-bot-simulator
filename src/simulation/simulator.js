@@ -15,7 +15,7 @@ export class TradingSimulator {
     }
 
     this.config = config;
-    this.db = getDatabase();
+    this.dbPromise = getDatabase();
     this.activeTrades = new Map();
     this.completedTrades = [];
     this.currentBalance = parseFloat(process.env.INITIAL_BALANCE_USDT) || 10000;
@@ -146,8 +146,8 @@ export class TradingSimulator {
         ORDER BY la.listing_date ASC
       `;
       
-      const stmt = this.db.prepare(query);
-      return stmt.all(cutoffDate);
+      const db = await this.dbPromise;
+      return db.all(query, cutoffDate);
       
     } catch (error) {
       logger.error(`Failed to fetch new listings: ${error.message}`);
@@ -224,7 +224,8 @@ export class TradingSimulator {
       const startTime = listingDate;
       const endTime = listingDate + (20 * 60 * 1000); // 20 хвилин після лістингу
       
-      const klines = this.db.prepare(klinesQuery).all(symbolId, startTime, endTime);
+      const db = await this.dbPromise;
+      const klines = await db.all(klinesQuery, symbolId, startTime, endTime);
       
       if (klines.length < 3) {
         return null;
@@ -701,8 +702,8 @@ export class TradingSimulator {
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `;
       
-      const stmt = this.db.prepare(query);
-      stmt.run(
+      const db = await this.dbPromise;
+      await db.run(
         summary.configId,
         summary.totalTrades,
         summary.profitableTrades,

@@ -3,7 +3,7 @@ import logger from '../utils/logger.js';
 
 export class ConfigurationGenerator {
   constructor() {
-    this.db = getDatabase();
+    this.dbPromise = getDatabase();
   }
   
   async generateConfigurations() {
@@ -73,18 +73,17 @@ export class ConfigurationGenerator {
   }
   
   async saveConfigurations(configs) {
-    const stmt = this.db.prepare(`
-      INSERT OR IGNORE INTO simulation_configs (
-        name, take_profit_percent, stop_loss_percent,
-        trailing_stop_enabled, trailing_stop_percent, trailing_stop_activation_percent,
-        buy_amount_usdt, max_open_trades, min_liquidity_usdt,
-        binance_fee_percent, cooldown_seconds
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `);
-    
-    const insertMany = this.db.transaction((configs) => {
+    const db = await this.dbPromise;
+    await db.exec('BEGIN');
+    try {
       for (const config of configs) {
-        stmt.run(
+        await db.run(
+          `INSERT OR IGNORE INTO simulation_configs (
+            name, take_profit_percent, stop_loss_percent,
+            trailing_stop_enabled, trailing_stop_percent, trailing_stop_activation_percent,
+            buy_amount_usdt, max_open_trades, min_liquidity_usdt,
+            binance_fee_percent, cooldown_seconds
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           config.name,
           config.takeProfitPercent,
           config.stopLossPercent,
@@ -98,23 +97,27 @@ export class ConfigurationGenerator {
           config.cooldownSeconds
         );
       }
-    });
-    
-    insertMany(configs);
+      await db.exec('COMMIT');
+    } catch (err) {
+      await db.exec('ROLLBACK');
+      throw err;
+    }
     logger.info(`Saved ${configs.length} configurations to database`);
   }
-  
+
   async getConfigurations() {
-    return this.db.prepare(`
+    const db = await this.dbPromise;
+    return db.all(`
       SELECT * FROM simulation_configs
       ORDER BY id
-    `).all();
+    `);
   }
-  
+
   async getOptimizedConfigurations(limit = 10) {
     // Отримуємо топ конфігурації на основі попередніх симуляцій
-    return this.db.prepare(`
-      SELECT 
+    const db = await this.dbPromise;
+    return db.all(`
+      SELECT
         sc.*,
         ss.roi_percent,
         ss.win_rate_percent,
@@ -123,6 +126,7 @@ export class ConfigurationGenerator {
       LEFT JOIN simulation_summary ss ON sc.id = ss.config_id
       ORDER BY ss.roi_percent DESC NULLS LAST
       LIMIT ?
-    `).all(limit);
+    `,
+    limit);
   }
 }

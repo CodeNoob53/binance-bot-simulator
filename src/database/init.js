@@ -1,4 +1,5 @@
-import Database from 'better-sqlite3';
+import sqlite3 from 'sqlite3';
+import { open } from 'sqlite';
 import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
 import { mkdirSync } from 'fs';
@@ -7,29 +8,23 @@ import { runMigrations } from './migrations.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
-export function initializeDatabase() {
+export async function initializeDatabase() {
   try {
-    // Створюємо директорію для БД
     const dbDir = join(__dirname, '../../data');
     mkdirSync(dbDir, { recursive: true });
-    
     const dbPath = process.env.DB_PATH || join(dbDir, 'simulation.db');
-    
     logger.info(`Initializing database at: ${dbPath}`);
-    
-    const db = new Database(dbPath);
-    
-    // Оптимізація SQLite
-    db.pragma('journal_mode = WAL');
-    db.pragma('synchronous = NORMAL');
-    db.pragma('cache_size = 10000');
-    db.pragma('temp_store = memory');
-    
-    // Запускаємо міграції
-    runMigrations(db);
-    
+
+    const db = await open({ filename: dbPath, driver: sqlite3.Database });
+
+    await db.exec('PRAGMA journal_mode = WAL;');
+    await db.exec('PRAGMA synchronous = NORMAL;');
+    await db.exec('PRAGMA cache_size = 10000;');
+    await db.exec('PRAGMA temp_store = MEMORY;');
+
+    await runMigrations(db);
+
     logger.info('Database initialized successfully');
-    
     return db;
   } catch (error) {
     logger.error('Failed to initialize database:', error);
@@ -37,20 +32,20 @@ export function initializeDatabase() {
   }
 }
 
-// Singleton instance
-let dbInstance = null;
+let dbInstancePromise = null;
 
-export function getDatabase() {
-  if (!dbInstance) {
-    dbInstance = initializeDatabase();
+export async function getDatabase() {
+  if (!dbInstancePromise) {
+    dbInstancePromise = initializeDatabase();
   }
-  return dbInstance;
+  return dbInstancePromise;
 }
 
-export function closeDatabase() {
-  if (dbInstance) {
-    dbInstance.close();
-    dbInstance = null;
+export async function closeDatabase() {
+  if (dbInstancePromise) {
+    const db = await dbInstancePromise;
+    await db.close();
+    dbInstancePromise = null;
     logger.info('Database connection closed');
   }
 }

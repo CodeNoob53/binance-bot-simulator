@@ -4,19 +4,20 @@ import logger from '../utils/logger.js';
 
 export class ResultAnalyzer {
   constructor() {
-    this.db = getDatabase();
+    this.dbPromise = getDatabase();
   }
   
   async analyzeConfigurations() {
-    const summaries = this.db.prepare(`
-      SELECT 
+    const db = await this.dbPromise;
+    const summaries = await db.all(`
+      SELECT
         sc.*,
         ss.*
       FROM simulation_summary ss
       JOIN simulation_configs sc ON ss.config_id = sc.id
       WHERE ss.total_trades > 10
       ORDER BY ss.roi_percent DESC
-    `).all();
+    `);
     
     return {
       totalConfigs: summaries.length,
@@ -42,11 +43,12 @@ export class ResultAnalyzer {
       { name: '24-48hour', start: 24 * 60 * 60 * 1000, end: 48 * 60 * 60 * 1000 }
     ];
     
+    const db = await this.dbPromise;
     const results = [];
     
     for (const window of timeWindows) {
-      const trades = this.db.prepare(`
-        SELECT 
+      const trades = await db.get(`
+        SELECT
           COUNT(*) as total_trades,
           AVG(CASE WHEN exit_reason IN ('take_profit', 'trailing_stop') THEN 1 ELSE 0 END) * 100 as win_rate,
           AVG(profit_loss_percent) as avg_profit,
@@ -54,10 +56,10 @@ export class ResultAnalyzer {
           COUNT(CASE WHEN exit_reason = 'stop_loss' THEN 1 END) as stop_loss_count,
           COUNT(CASE WHEN exit_reason = 'trailing_stop' THEN 1 END) as trailing_stop_count,
           COUNT(CASE WHEN exit_reason = 'timeout' THEN 1 END) as timeout_count
-        FROM simulation_results 
+        FROM simulation_results
         WHERE (exit_time - entry_time) BETWEEN ? AND ?
         AND exit_time IS NOT NULL
-      `).get(window.start, window.end);
+      `, window.start, window.end);
       
       results.push({
         timeWindow: window.name,
@@ -69,9 +71,10 @@ export class ResultAnalyzer {
   }
   
   async analyzeProfitDistribution() {
-    const distribution = this.db.prepare(`
-      SELECT 
-        CASE 
+    const db = await this.dbPromise;
+    const distribution = await db.all(`
+      SELECT
+        CASE
           WHEN profit_loss_percent < -20 THEN '< -20%'
           WHEN profit_loss_percent < -15 THEN '-20% to -15%'
           WHEN profit_loss_percent < -10 THEN '-15% to -10%'
@@ -90,15 +93,16 @@ export class ResultAnalyzer {
       WHERE profit_loss_percent IS NOT NULL
       GROUP BY profit_range
       ORDER BY MIN(profit_loss_percent)
-    `).all();
+    `);
     
     return distribution;
   }
   
   async analyzeTrailingStopEffectiveness() {
     // Порівняння конфігурацій з та без trailing stop
-    const comparison = this.db.prepare(`
-      SELECT 
+    const db = await this.dbPromise;
+    const comparison = await db.all(`
+      SELECT
         sc.trailing_stop_enabled,
         COUNT(DISTINCT sc.id) as config_count,
         AVG(ss.roi_percent) as avg_roi,
@@ -108,11 +112,11 @@ export class ResultAnalyzer {
       FROM simulation_configs sc
       JOIN simulation_summary ss ON sc.id = ss.config_id
       GROUP BY sc.trailing_stop_enabled
-    `).all();
-    
+    `);
+
     // Детальний аналіз trailing stop trades
-    const trailingStopDetails = this.db.prepare(`
-      SELECT 
+    const trailingStopDetails = await db.all(`
+      SELECT
         sc.trailing_stop_percent,
         sc.trailing_stop_activation_percent,
         COUNT(sr.id) as trade_count,
@@ -122,7 +126,7 @@ export class ResultAnalyzer {
       JOIN simulation_configs sc ON sr.config_id = sc.id
       WHERE sr.exit_reason = 'trailing_stop'
       GROUP BY sc.trailing_stop_percent, sc.trailing_stop_activation_percent
-    `).all();
+    `);
     
     return {
       comparison,
@@ -132,8 +136,9 @@ export class ResultAnalyzer {
   
   async findOptimalParameters() {
     // Комплексний аналіз для пошуку оптимальних параметрів
-    const results = this.db.prepare(`
-      SELECT 
+    const db = await this.dbPromise;
+    const results = await db.get(`
+      SELECT
         sc.*,
         ss.roi_percent,
         ss.win_rate_percent,
@@ -149,7 +154,7 @@ export class ResultAnalyzer {
       WHERE ss.total_trades >= 20
       ORDER BY combined_score DESC
       LIMIT 1
-    `).get();
+    `);
     
     return results;
   }

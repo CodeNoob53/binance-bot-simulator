@@ -1,10 +1,10 @@
 import logger from '../utils/logger.js';
 
-export function runMigrations(db) {
+export async function runMigrations(db) {
   logger.info('Running database migrations...');
   
   // Створюємо таблиці
-  db.exec(`
+  await db.exec(`
     -- Таблиця символів
     CREATE TABLE IF NOT EXISTS symbols (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
