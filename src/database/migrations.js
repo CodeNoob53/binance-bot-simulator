@@ -28,10 +28,10 @@ export async function runMigrations(db) {
       error_message TEXT,
       analysis_date INTEGER NOT NULL DEFAULT (strftime('%s', 'now') * 1000),
       retry_count INTEGER DEFAULT 0,
-      FOREIGN KEY (symbol_id) REFERENCES symbols(id)
+      FOREIGN KEY (symbol_id) REFERENCES symbols(id),
+      UNIQUE(symbol_id)
     );
     
-    CREATE INDEX IF NOT EXISTS idx_listing_analysis_symbol ON listing_analysis(symbol_id);
     CREATE INDEX IF NOT EXISTS idx_listing_analysis_status ON listing_analysis(data_status);
     CREATE INDEX IF NOT EXISTS idx_listing_analysis_listing_date ON listing_analysis(listing_date);
     
