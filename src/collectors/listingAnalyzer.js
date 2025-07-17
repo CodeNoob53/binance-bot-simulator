@@ -90,9 +90,14 @@ export class ListingAnalyzer {
   async saveListingAnalysis(symbolId, listingDate, status, errorMessage = null) {
     const db = await this.dbPromise;
     await db.run(
-      `INSERT OR REPLACE INTO listing_analysis
-       (symbol_id, listing_date, data_status, error_message, analysis_date)
-       VALUES (?, ?, ?, ?, ?)`,
+      `INSERT INTO listing_analysis (
+        symbol_id, listing_date, data_status, error_message, analysis_date
+      ) VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT(symbol_id) DO UPDATE SET
+        listing_date = excluded.listing_date,
+        data_status = excluded.data_status,
+        error_message = excluded.error_message,
+        analysis_date = excluded.analysis_date`,
       symbolId,
       listingDate,
       status,
