@@ -26,10 +26,11 @@ export class WorkerManager {
     let processed = 0;
     
     // Додаємо всі завдання в чергу
-    const promises = items.map((item, index) => 
+    const promises = items.map((item, index) =>
       this.queue.add(async () => {
+        const workerId = (index % this.workersCount) + 1;
         try {
-          const result = await processingFunction(item);
+          const result = await processingFunction(item, workerId);
           processed++;
           progressBar.update(processed);
           return result;

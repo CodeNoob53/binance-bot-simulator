@@ -33,7 +33,7 @@ export class KlineCollector {
     };
   }
   
-  async collectSymbolKlines(listing) {
+  async collectSymbolKlines(listing, workerId = 0) {
     try {
       const { symbol_id, symbol, listing_date } = listing;
       
@@ -41,7 +41,7 @@ export class KlineCollector {
       const endTime = listing_date + (48 * 60 * 60 * 1000);
       const actualEndTime = Math.min(endTime, Date.now());
       
-      logger.info(`Collecting minute klines for ${symbol}: ${new Date(listing_date).toISOString()} to ${new Date(actualEndTime).toISOString()}`);
+      logger.info(`[Worker ${workerId}] Collecting minute klines for ${symbol}: ${new Date(listing_date).toISOString()} to ${new Date(actualEndTime).toISOString()}`);
       
       const klines = await this.binanceClient.getHistoricalKlines(
         symbol,
@@ -58,12 +58,15 @@ export class KlineCollector {
       // Зберігаємо в БД батчами
       await this.saveKlines(symbol_id, klines);
       
-      logger.info(`Saved ${klines.length} minute klines for ${symbol}`);
+      logger.info(`[Worker ${workerId}] Saved ${klines.length} minute klines for ${symbol}`);
+
+      logger.info(`[Worker ${workerId}] Finished collecting klines for ${symbol}`);
       
       return { symbol, success: true, klinesCount: klines.length };
       
     } catch (error) {
       logger.error(`Failed to collect klines for ${listing.symbol}:`, error.message);
+      logger.info(`[Worker ${workerId}] Finished collecting klines for ${listing.symbol} with error`);
       return { symbol: listing.symbol, success: false, reason: error.message };
     }
   }

@@ -32,7 +32,8 @@ export class SymbolCollector {
       const db = await this.dbPromise;
       await db.exec('BEGIN');
       try {
-        for (const symbolData of usdtSymbols) {
+        for (const [index, symbolData] of usdtSymbols.entries()) {
+          logger.info(`Processing symbol ${index + 1}/${usdtSymbols.length}: ${symbolData.symbol}`);
           await db.run(
             `INSERT OR REPLACE INTO symbols (symbol, base_asset, quote_asset, status, updated_at) VALUES (?, ?, ?, ?, ?)`,
             symbolData.symbol,
@@ -41,6 +42,7 @@ export class SymbolCollector {
             symbolData.status,
             Date.now()
           );
+          logger.info(`Finished processing ${symbolData.symbol}`);
         }
         await db.exec('COMMIT');
       } catch (err) {
