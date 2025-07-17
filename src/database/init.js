@@ -17,6 +17,8 @@ export async function initializeDatabase() {
 
     const db = await open({ filename: dbPath, driver: sqlite3.Database });
 
+    await db.configure('busyTimeout', parseInt(process.env.DB_BUSY_TIMEOUT_MS) || 5000);
+
     await db.exec('PRAGMA journal_mode = WAL;');
     await db.exec('PRAGMA synchronous = NORMAL;');
     await db.exec('PRAGMA cache_size = 10000;');
