@@ -212,8 +212,8 @@ export class TradingSimulator {
     try {
       // Отримання історичних klines
       const klinesQuery = `
-        SELECT open_time, close_time, open, high, low, close, volume, quote_volume
-        FROM historical_klines 
+        SELECT open_time, close_time, open_price, high_price, low_price, close_price, volume, quote_asset_volume
+        FROM historical_klines
         WHERE symbol_id = ? 
         AND open_time >= ? 
         AND open_time <= ?
@@ -235,13 +235,13 @@ export class TradingSimulator {
       const lastKline = klines[klines.length - 1];
       const ticker = {
         symbol,
-        price: lastKline.close,
+        price: lastKline.close_price,
         volume: lastKline.volume,
         priceChangePercent: this.calculatePriceChange(klines)
       };
       
       // Створення простого order book (симуляція)
-      const currentPrice = parseFloat(lastKline.close);
+      const currentPrice = parseFloat(lastKline.close_price);
       const orderBook = this.generateSimulatedOrderBook(currentPrice);
       
       return {
@@ -249,11 +249,12 @@ export class TradingSimulator {
         ticker,
         orderBook,
         klines: klines.map(k => ({
-          open: k.open,
-          high: k.high,
-          low: k.low,
-          close: k.close,
+          open_price: k.open_price,
+          high_price: k.high_price,
+          low_price: k.low_price,
+          close_price: k.close_price,
           volume: k.volume,
+          quote_asset_volume: k.quote_asset_volume,
           openTime: k.open_time,
           closeTime: k.close_time
         })),
@@ -274,8 +275,8 @@ export class TradingSimulator {
   calculatePriceChange(klines) {
     if (klines.length < 2) return '0.00';
     
-    const firstPrice = parseFloat(klines[0].open);
-    const lastPrice = parseFloat(klines[klines.length - 1].close);
+    const firstPrice = parseFloat(klines[0].open_price);
+    const lastPrice = parseFloat(klines[klines.length - 1].close_price);
     const change = ((lastPrice - firstPrice) / firstPrice) * 100;
     
     return change.toFixed(2);
