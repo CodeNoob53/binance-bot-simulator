@@ -31,29 +31,33 @@ export class ListingAnalyzer {
     };
   }
   
-  async analyzeSymbolListing(symbol) {
+  async analyzeSymbolListing(symbol, workerId = 0) {
     const maxRetries = 2;
     
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      logger.info(`[Worker ${workerId}] Processing ${symbol.symbol} - attempt ${attempt}/${maxRetries}`);
       try {
         const listingDate = await this.determineListingDate(symbol);
         
         if (listingDate) {
           await this.saveListingAnalysis(symbol.id, listingDate, 'analyzed');
+          logger.info(`[Worker ${workerId}] Finished ${symbol.symbol} successfully`);
           return { symbol: symbol.symbol, success: true, listingDate };
         } else {
           await this.saveListingAnalysis(symbol.id, null, 'no_data');
+          logger.info(`[Worker ${workerId}] Finished ${symbol.symbol} with no data`);
           return { symbol: symbol.symbol, success: false, reason: 'no_data' };
         }
-        
+
       } catch (error) {
         logger.warn(`Attempt ${attempt}/${maxRetries} failed for ${symbol.symbol}: ${error.message}`);
-        
+
         if (attempt === maxRetries) {
           await this.saveListingAnalysis(symbol.id, null, 'error', error.message);
+          logger.info(`[Worker ${workerId}] Finished ${symbol.symbol} with error`);
           return { symbol: symbol.symbol, success: false, reason: error.message };
         }
-        
+
         await sleep(Math.pow(2, attempt) * 1000);
       }
     }
