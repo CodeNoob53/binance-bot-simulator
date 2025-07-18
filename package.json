@@ -10,6 +10,7 @@
     "simulate": "node scripts/run-simulation.js",
     "analyze": "node scripts/analyze-results.js",
     "db:init": "node src/database/init.js",
+    "pretest": "npm install",
     "test": "node test-runner.js"
   },
   "dependencies": {
