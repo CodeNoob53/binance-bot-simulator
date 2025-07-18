@@ -73,21 +73,21 @@ async function runSimulations(configs) {
   for (let i = 0; i < configs.length; i++) {
     const config = configs[i];
     progressBar.update(i + 1, { config: config.name });
-    
+
     try {
       const simulator = new TradingSimulator(config);
       const result = await simulator.runSimulation(180); // 180 днів
-      
+
       results.push({
         config,
-        result
+        summary: result.summary
       });
-      
+
     } catch (error) {
       logger.error(`Simulation failed for ${config.name}:`, error);
       results.push({
         config,
-        result: { error: error.message }
+        summary: { error: error.message }
       });
     }
   }
@@ -110,36 +110,36 @@ async function saveSimulationSummaries(results) {
 
   await db.exec('BEGIN');
   try {
-    for (const { config, result } of results) {
-      if (result.error) continue;
-      
+    for (const { config, summary } of results) {
+      if (summary.error) continue;
+
       // Розрахунок додаткових метрик
-      const avgProfitPercent = result.profitableTrades > 0 ?
-        result.totalProfitUsdt / result.profitableTrades / config.buyAmountUsdt * 100 : 0;
-      const avgLossPercent = result.losingTrades > 0 ?
-        result.totalLossUsdt / result.losingTrades / config.buyAmountUsdt * 100 : 0;
-      
+      const avgProfitPercent = summary.profitableTrades > 0 ?
+        summary.totalProfitUsdt / summary.profitableTrades / config.buyAmountUsdt * 100 : 0;
+      const avgLossPercent = summary.losingTrades > 0 ?
+        summary.totalLossUsdt / summary.losingTrades / config.buyAmountUsdt * 100 : 0;
+
       await db.run(
         stmtSql,
         config.id,
-        result.totalTrades,
-        result.profitableTrades,
-        result.losingTrades,
-        result.timeoutTrades,
-        result.trailingStopTrades || 0,
-        result.totalProfitUsdt,
-        result.totalLossUsdt,
-        result.netProfitUsdt,
-        result.winRatePercent,
+        summary.totalTrades,
+        summary.profitableTrades,
+        summary.losingTrades,
+        summary.timeoutTrades,
+        summary.trailingStopTrades || 0,
+        summary.totalProfitUsdt,
+        summary.totalLossUsdt,
+        summary.netProfitUsdt,
+        summary.winRate,
         avgProfitPercent,
         avgLossPercent,
         0, // max_profit_percent - потребує додаткового розрахунку
         0, // max_loss_percent - потребує додаткового розрахунку
-        0, // avg_trade_duration_minutes - потребує додаткового розрахунку
+        summary.averageTradeTime || 0,
         180, // total_simulation_period_days
-        result.roiPercent,
-        result.sharpeRatio,
-        result.maxDrawdown
+        summary.roiPercent,
+        summary.sharpeRatio,
+        summary.maxDrawdown
       );
     }
     await db.exec('COMMIT');
@@ -151,18 +151,18 @@ async function saveSimulationSummaries(results) {
 
 function displayTopResults(results, limit = 10) {
   const sorted = results
-    .filter(r => !r.result.error && r.result.totalTrades > 0)
-    .sort((a, b) => b.result.roiPercent - a.result.roiPercent)
+    .filter(r => !r.summary.error && r.summary.totalTrades > 0)
+    .sort((a, b) => b.summary.roiPercent - a.summary.roiPercent)
     .slice(0, limit);
-  
-  console.table(sorted.map(({ config, result }) => ({
+
+  console.table(sorted.map(({ config, summary }) => ({
     'Config': config.name,
-    'ROI %': result.roiPercent.toFixed(2),
-    'Win Rate %': result.winRatePercent.toFixed(2),
-    'Total Trades': result.totalTrades,
-    'Net Profit': `$${result.netProfitUsdt.toFixed(2)}`,
-    'Sharpe Ratio': result.sharpeRatio.toFixed(2),
-    'Max Drawdown %': result.maxDrawdown.toFixed(2)
+    'ROI %': summary.roiPercent.toFixed(2),
+    'Win Rate %': summary.winRate.toFixed(2),
+    'Total Trades': summary.totalTrades,
+    'Net Profit': `$${summary.netProfitUsdt.toFixed(2)}`,
+    'Sharpe Ratio': summary.sharpeRatio.toFixed(2),
+    'Max Drawdown %': summary.maxDrawdown.toFixed(2)
   })));
 }
 
