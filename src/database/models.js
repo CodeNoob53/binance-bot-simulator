@@ -196,7 +196,7 @@ export class SimulationConfigModel {
   async create(config) {
     const db = await this.dbPromise;
     const result = await db.run(
-      `INSERT INTO simulation_configs (
+      `INSERT OR IGNORE INTO simulation_configs (
         name, take_profit_percent, stop_loss_percent,
         trailing_stop_enabled, trailing_stop_percent, trailing_stop_activation_percent,
         buy_amount_usdt, max_open_trades, min_liquidity_usdt,

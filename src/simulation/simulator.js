@@ -112,15 +112,18 @@ export class TradingSimulator {
   /**
    * Збереження конфігурації в БД
    */
-  async saveConfiguration() {
-    try {
-      return this.configModel.create(this.config);
-    } catch (error) {
-      logger.error(`Failed to save configuration: ${error.message}`);
-      throw error;
+async saveConfiguration() {
+  try {
+    return this.configModel.create(this.config);
+  } catch (error) {
+    // Якщо конфігурація вже існує - знаходимо її ID
+    if (error.message.includes('UNIQUE constraint')) {
+      const existing = await this.configModel.findByName(this.config.name);
+      return existing?.id;
     }
+    throw error;
   }
-
+}
   /**
    * Отримання нових лістингів з даними
    */

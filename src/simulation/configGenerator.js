@@ -1,3 +1,4 @@
+// src/simulation/configGenerator.js
 import { getDatabase } from '../database/init.js';
 import logger from '../utils/logger.js';
 
@@ -66,19 +67,37 @@ export class ConfigurationGenerator {
     
     logger.info(`Generated ${configs.length} configurations`);
     
-    // Зберігаємо в БД
+    // Зберігаємо в БД (з виправленням)
     await this.saveConfigurations(configs);
     
     return configs;
   }
   
+  // ВИПРАВЛЕНО: метод збереження конфігурацій
   async saveConfigurations(configs) {
     const db = await this.dbPromise;
+    
+    // Спочатку отримуємо всі існуючі конфігурації
+    const existingConfigs = await db.all(
+      `SELECT name FROM simulation_configs`
+    );
+    const existingNames = new Set(existingConfigs.map(c => c.name));
+    
+    // Фільтруємо тільки нові конфігурації
+    const newConfigs = configs.filter(config => !existingNames.has(config.name));
+    
+    if (newConfigs.length === 0) {
+      logger.info('All configurations already exist in database');
+      return;
+    }
+    
+    logger.info(`Saving ${newConfigs.length} new configurations to database`);
+    
     await db.exec('BEGIN');
     try {
-      for (const config of configs) {
+      for (const config of newConfigs) {
         await db.run(
-          `INSERT OR IGNORE INTO simulation_configs (
+          `INSERT INTO simulation_configs (
             name, take_profit_percent, stop_loss_percent,
             trailing_stop_enabled, trailing_stop_percent, trailing_stop_activation_percent,
             buy_amount_usdt, max_open_trades, min_liquidity_usdt,
@@ -98,11 +117,12 @@ export class ConfigurationGenerator {
         );
       }
       await db.exec('COMMIT');
+      logger.info(`Successfully saved ${newConfigs.length} configurations`);
     } catch (err) {
       await db.exec('ROLLBACK');
+      logger.error(`Failed to save configurations: ${err.message}`);
       throw err;
     }
-    logger.info(`Saved ${configs.length} configurations to database`);
   }
 
   async getConfigurations() {
@@ -127,32 +147,86 @@ export class ConfigurationGenerator {
     `);
   }
 
-  async getOptimizedConfigurations(limit = 10) {
-    // Отримуємо топ конфігурації на основі попередніх симуляцій
+  // ДОДАНО: метод очищення дублікатів 
+  async cleanDuplicateConfigs() {
     const db = await this.dbPromise;
-    return db.all(`
-      SELECT
-        sc.id,
-        sc.name,
-        sc.take_profit_percent AS takeProfitPercent,
-        sc.stop_loss_percent AS stopLossPercent,
-        sc.trailing_stop_enabled AS trailingStopEnabled,
-        sc.trailing_stop_percent AS trailingStopPercent,
-        sc.trailing_stop_activation_percent AS trailingStopActivationPercent,
-        sc.buy_amount_usdt AS buyAmountUsdt,
-        sc.max_open_trades AS maxOpenTrades,
-        sc.min_liquidity_usdt AS minLiquidityUsdt,
-        sc.binance_fee_percent AS binanceFeePercent,
-        sc.cooldown_seconds AS cooldownSeconds,
-        sc.created_at AS createdAt,
-        ss.roi_percent AS roiPercent,
-        ss.win_rate_percent AS winRatePercent,
-        ss.sharpe_ratio AS sharpeRatio
-      FROM simulation_configs sc
-      LEFT JOIN simulation_summary ss ON sc.id = ss.config_id
-      ORDER BY ss.roi_percent DESC NULLS LAST
-      LIMIT ?
-    `,
-    limit);
+    
+    logger.info('Cleaning duplicate configurations...');
+    
+    // Знаходимо дублікати
+    const duplicates = await db.all(`
+      SELECT name, COUNT(*) as count
+      FROM simulation_configs
+      GROUP BY name
+      HAVING count > 1
+    `);
+    
+    if (duplicates.length === 0) {
+      logger.info('No duplicate configurations found');
+      return 0;
+    }
+    
+    logger.info(`Found ${duplicates.length} duplicate configuration names`);
+    
+    let cleaned = 0;
+    await db.exec('BEGIN');
+    try {
+      for (const duplicate of duplicates) {
+        // Залишаємо тільки першу конфігурацію з кожним ім'ям
+        const keep = await db.get(
+          `SELECT id FROM simulation_configs
+           WHERE name = ?
+           ORDER BY id ASC
+           LIMIT 1`,
+          duplicate.name
+        );
+        
+        const deleted = await db.run(
+          `DELETE FROM simulation_configs
+           WHERE name = ? AND id != ?`,
+          duplicate.name,
+          keep.id
+        );
+        
+        cleaned += deleted.changes;
+      }
+      await db.exec('COMMIT');
+      logger.info(`Cleaned ${cleaned} duplicate configurations`);
+    } catch (err) {
+      await db.exec('ROLLBACK');
+      logger.error(`Failed to clean duplicates: ${err.message}`);
+      throw err;
+    }
+    
+    return cleaned;
+  }
+
+  // ДОДАНО: метод для скидання всіх конфігурацій
+  async resetConfigurations() {
+    const db = await this.dbPromise;
+    
+    logger.info('Resetting all configurations...');
+    
+    await db.exec('BEGIN');
+    try {
+      // Видаляємо всі результати симуляцій
+      await db.run('DELETE FROM simulation_summary');
+      await db.run('DELETE FROM simulation_results');
+      
+      // Видаляємо всі конфігурації
+      await db.run('DELETE FROM simulation_configs');
+      
+      // Скидаємо AUTO_INCREMENT
+      await db.run('DELETE FROM sqlite_sequence WHERE name = "simulation_configs"');
+      await db.run('DELETE FROM sqlite_sequence WHERE name = "simulation_results"');
+      await db.run('DELETE FROM sqlite_sequence WHERE name = "simulation_summary"');
+      
+      await db.exec('COMMIT');
+      logger.info('Successfully reset all configurations and results');
+    } catch (err) {
+      await db.exec('ROLLBACK');
+      logger.error(`Failed to reset configurations: ${err.message}`);
+      throw err;
+    }
   }
 }

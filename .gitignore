@@ -49,3 +49,5 @@ yarn.lock
 package-lock.json
 data/simulation.db
 .gitignore
+data/simulation.db-wal
+data/simulation.db-shm
