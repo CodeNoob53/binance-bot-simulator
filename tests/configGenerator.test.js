@@ -16,3 +16,16 @@ export async function testGetConfigurationsCamelCase() {
   assert.strictEqual(typeof cfg.maxOpenTrades, 'number');
   await closeDatabase();
 }
+
+export async function testTrailingActivationBelowTP() {
+  process.env.DB_PATH = ':memory:';
+  await getDatabase();
+  const generator = new ConfigurationGenerator();
+  const configs = await generator.generateConfigurations();
+  for (const cfg of configs) {
+    if (cfg.trailingStopEnabled) {
+      assert(cfg.trailingStopActivationPercent < cfg.takeProfitPercent);
+    }
+  }
+  await closeDatabase();
+}

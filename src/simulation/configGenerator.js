@@ -42,6 +42,9 @@ export class ConfigurationGenerator {
         
         for (const amount of variations.buyAmountUsdt) {
           for (const trailing of variations.trailingStop) {
+            if (trailing.enabled && trailing.activation >= tp) {
+              continue;
+            }
             const config = {
               ...baseParams,
               takeProfitPercent: tp,
