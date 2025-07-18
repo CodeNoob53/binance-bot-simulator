@@ -63,16 +63,26 @@ export class ListingAnalysisModel {
 
   async create(analysisData) {
     const db = await this.dbPromise;
-    const result = await db.run(
-      `INSERT INTO listing_analysis (symbol_id, listing_date, data_status, error_message, retry_count)
-       VALUES (?, ?, ?, ?, ?)`,
+    await db.run(
+      `INSERT INTO listing_analysis (
+        symbol_id, listing_date, data_status, error_message, retry_count
+      ) VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT(symbol_id) DO UPDATE SET
+        listing_date = excluded.listing_date,
+        data_status = excluded.data_status,
+        error_message = excluded.error_message,
+        retry_count = excluded.retry_count`,
       analysisData.symbolId,
       analysisData.listingDate,
       analysisData.dataStatus || 'pending',
       analysisData.errorMessage,
       analysisData.retryCount || 0
     );
-    return result.lastID;
+    const row = await db.get(
+      'SELECT id FROM listing_analysis WHERE symbol_id = ?',
+      analysisData.symbolId
+    );
+    return row.id;
   }
 
   async findBySymbolId(symbolId) {
