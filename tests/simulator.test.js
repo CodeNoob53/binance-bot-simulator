@@ -91,3 +91,41 @@ export async function testSaveSimulationSummaryInsertsRow() {
 
   await closeDatabase();
 }
+
+export async function testTrailingStopSavesResult() {
+  process.env.DB_PATH = ':memory:';
+  const db = await getDatabase();
+
+  const sim = new TradingSimulator({
+    name: 'TrailingTest',
+    takeProfitPercent: 30,
+    stopLossPercent: 5,
+    buyAmountUsdt: 10,
+    maxOpenTrades: 1,
+    trailingStopEnabled: true,
+    trailingStopPercent: 0.05,
+    trailingStopActivationPercent: 0.1,
+    binanceFeePercent: 0.1
+  });
+
+  const marketData = {
+    symbol: 'TSTUSDT',
+    symbolId: 1,
+    ticker: { price: '100', volume: '1000', priceChangePercent: '0' },
+    orderBook: { bids: [['100', '1']], asks: [['101', '1']] },
+    klines: [
+      { open: '100', high: '100', low: '100', close: '100' },
+      { open: '100', high: '112', low: '100', close: '112' },
+      { open: '112', high: '112', low: '104', close: '105' }
+    ],
+    listingDate: Date.now(),
+    currentTime: Date.now() + 180000
+  };
+
+  await sim.executeTrade(marketData, 1);
+  const rows = await db.all('SELECT * FROM simulation_results');
+  assert.strictEqual(rows.length, 1);
+  assert.strictEqual(rows[0].exit_reason, 'trailing_stop');
+
+  await closeDatabase();
+}

@@ -336,9 +336,14 @@ async saveConfiguration() {
       minPrice: entryPrice,
       status: 'ACTIVE'
     };
-    
+
     // Додавання в активні угоди
     this.activeTrades.set(symbol, trade);
+
+    // Ініціалізація trailing stop
+    if (this.config.trailingStopEnabled) {
+      this.trailingStopLoss.initializeTrade(trade.id, entryPrice);
+    }
     
     // Оновлення балансу
     this.currentBalance -= this.config.buyAmountUsdt;
@@ -371,8 +376,8 @@ async saveConfiguration() {
       
       // Перевірка trailing stop
       if (this.config.trailingStopEnabled) {
-        const trailingResult = this.trailingStopLoss.update(trade, close);
-        if (trailingResult.shouldExit) {
+        const trailingResult = this.trailingStopLoss.updatePrice(trade.id, close);
+        if (trailingResult && trailingResult.triggered) {
           await this.closeTrade(trade, 'trailing_stop', trailingResult.exitPrice);
           return;
         }
