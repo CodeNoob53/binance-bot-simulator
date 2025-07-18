@@ -698,28 +698,61 @@ async saveConfiguration() {
   async saveSimulationSummary(summary) {
     try {
       const query = `
-        INSERT OR REPLACE INTO simulation_summary (
-          config_id, total_trades, profitable_trades, losing_trades,
-          win_rate_percent, roi_percent, max_drawdown_percent,
-          total_volume_usdt, total_commissions_usdt, profit_factor,
-          sharpe_ratio, avg_trade_return_usdt, simulation_date
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO simulation_summary (
+          config_id, total_trades, profitable_trades, losing_trades, timeout_trades,
+          trailing_stop_trades, total_profit_usdt, total_loss_usdt, net_profit_usdt,
+          win_rate_percent, avg_profit_percent, avg_loss_percent, max_profit_percent,
+          max_loss_percent, avg_trade_duration_minutes, total_simulation_period_days,
+          roi_percent, sharpe_ratio, max_drawdown_percent, simulation_date
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `;
       
+      const totalProfit = this.completedTrades
+        .filter(t => t.profitLossUsdt > 0)
+        .reduce((sum, t) => sum + t.profitLossUsdt, 0);
+
+      const totalLoss = this.completedTrades
+        .filter(t => t.profitLossUsdt < 0)
+        .reduce((sum, t) => sum + Math.abs(t.profitLossUsdt), 0);
+
+      const avgProfitPercent = summary.profitableTrades > 0
+        ? totalProfit / summary.profitableTrades / this.config.buyAmountUsdt * 100
+        : 0;
+
+      const avgLossPercent = summary.losingTrades > 0
+        ? totalLoss / summary.losingTrades / this.config.buyAmountUsdt * 100
+        : 0;
+
+      const maxProfitPercent = this.completedTrades.length > 0
+        ? Math.max(...this.completedTrades.map(t => t.profitLossPercent))
+        : 0;
+
+      const maxLossPercent = this.completedTrades.length > 0
+        ? Math.min(...this.completedTrades.map(t => t.profitLossPercent))
+        : 0;
+
       const db = await this.dbPromise;
       await db.run(
+        query,
         summary.configId,
         summary.totalTrades,
         summary.profitableTrades,
         summary.losingTrades,
+        this.stats.timeoutTrades,
+        this.stats.trailingStopTrades,
+        totalProfit,
+        totalLoss,
+        summary.totalReturn,
         summary.winRate,
+        avgProfitPercent,
+        avgLossPercent,
+        maxProfitPercent,
+        maxLossPercent,
+        summary.averageTradeTime,
+        0,
         summary.roiPercent,
-        summary.maxDrawdown,
-        summary.totalVolume,
-        summary.totalCommissions,
-        summary.profitFactor,
         summary.sharpeRatio,
-        summary.avgTradeReturn,
+        summary.maxDrawdown,
         Date.now()
       );
       

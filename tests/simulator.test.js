@@ -50,3 +50,44 @@ export async function testFetchKlinesDoesNotThrow() {
 
   await closeDatabase();
 }
+
+export async function testSaveSimulationSummaryInsertsRow() {
+  process.env.DB_PATH = ':memory:';
+  const db = await getDatabase();
+
+  const sim = new TradingSimulator({
+    name: 'Test',
+    takeProfitPercent: 2,
+    stopLossPercent: 1,
+    buyAmountUsdt: 10,
+    maxOpenTrades: 1,
+    trailingStopEnabled: false
+  });
+
+  sim.completedTrades.push(
+    { profitLossUsdt: 5, profitLossPercent: 5 },
+    { profitLossUsdt: -2, profitLossPercent: -2 }
+  );
+  sim.stats.totalTrades = 2;
+  sim.stats.profitableTrades = 1;
+  sim.stats.losingTrades = 1;
+
+  const summary = {
+    configId: 1,
+    totalTrades: 2,
+    profitableTrades: 1,
+    losingTrades: 1,
+    totalReturn: 3,
+    winRate: 50,
+    roiPercent: 30,
+    sharpeRatio: 1,
+    maxDrawdown: 5,
+    averageTradeTime: 0
+  };
+
+  await sim.saveSimulationSummary(summary);
+  const row = await db.get('SELECT * FROM simulation_summary WHERE config_id = 1');
+  assert(row);
+
+  await closeDatabase();
+}
