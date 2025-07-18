@@ -42,8 +42,9 @@ async function main() {
     const results = await runSimulations(configs);
     
     // Збереження результатів
-    console.log(chalk.yellow('\n💾 Saving results...'));
-    await saveSimulationSummaries(results);
+    // Результати вже збережені всередині TradingSimulator
+    // тож додаткове збереження не потрібне
+    console.log(chalk.yellow('\n💾 Results saved by simulator'));
     
     // Виведення топ результатів
     console.log(chalk.cyan('\n📊 Top 10 Configurations by ROI:\n'));
@@ -97,57 +98,6 @@ async function runSimulations(configs) {
   return results;
 }
 
-async function saveSimulationSummaries(results) {
-  const db = await getDatabase();
-  const stmtSql = `
-    INSERT INTO simulation_summary (
-      config_id, total_trades, profitable_trades, losing_trades, timeout_trades,
-      trailing_stop_trades, total_profit_usdt, total_loss_usdt, net_profit_usdt,
-      win_rate_percent, avg_profit_percent, avg_loss_percent, max_profit_percent,
-      max_loss_percent, avg_trade_duration_minutes, total_simulation_period_days,
-      roi_percent, sharpe_ratio, max_drawdown_percent
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
-
-  await db.exec('BEGIN');
-  try {
-    for (const { config, summary } of results) {
-      if (summary.error) continue;
-
-      // Розрахунок додаткових метрик
-      const avgProfitPercent = summary.profitableTrades > 0 ?
-        summary.totalProfitUsdt / summary.profitableTrades / config.buyAmountUsdt * 100 : 0;
-      const avgLossPercent = summary.losingTrades > 0 ?
-        summary.totalLossUsdt / summary.losingTrades / config.buyAmountUsdt * 100 : 0;
-
-      await db.run(
-        stmtSql,
-        config.id,
-        summary.totalTrades,
-        summary.profitableTrades,
-        summary.losingTrades,
-        summary.timeoutTrades,
-        summary.trailingStopTrades || 0,
-        summary.totalProfitUsdt,
-        summary.totalLossUsdt,
-        summary.netProfitUsdt,
-        summary.winRate,
-        avgProfitPercent,
-        avgLossPercent,
-        0, // max_profit_percent - потребує додаткового розрахунку
-        0, // max_loss_percent - потребує додаткового розрахунку
-        summary.averageTradeTime || 0,
-        180, // total_simulation_period_days
-        summary.roiPercent,
-        summary.sharpeRatio,
-        summary.maxDrawdown
-      );
-    }
-    await db.exec('COMMIT');
-  } catch (err) {
-    await db.exec('ROLLBACK');
-    throw err;
-  }
-}
 
 function displayTopResults(results, limit = 10) {
   const sorted = results
@@ -160,7 +110,7 @@ function displayTopResults(results, limit = 10) {
     'ROI %': summary.roiPercent.toFixed(2),
     'Win Rate %': summary.winRate.toFixed(2),
     'Total Trades': summary.totalTrades,
-    'Net Profit': `$${summary.netProfitUsdt.toFixed(2)}`,
+    'Net Profit': `$${summary.totalReturn.toFixed(2)}`,
     'Sharpe Ratio': summary.sharpeRatio.toFixed(2),
     'Max Drawdown %': summary.maxDrawdown.toFixed(2)
   })));
