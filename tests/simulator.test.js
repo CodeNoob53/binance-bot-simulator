@@ -47,6 +47,12 @@ export async function testFetchKlinesDoesNotThrow() {
 
   const data = await sim.getMarketDataForListing(symbolId, symbol, listingDate);
   assert(data);
+  const first = data.klines[0];
+  assert('open' in first);
+  assert('high' in first);
+  assert('low' in first);
+  assert('close' in first);
+  assert('quoteAssetVolume' in first);
 
   await closeDatabase();
 }

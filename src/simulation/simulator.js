@@ -252,12 +252,12 @@ async saveConfiguration() {
         ticker,
         orderBook,
         klines: klines.map(k => ({
-          open_price: k.open_price,
-          high_price: k.high_price,
-          low_price: k.low_price,
-          close_price: k.close_price,
+          open: k.open_price,
+          high: k.high_price,
+          low: k.low_price,
+          close: k.close_price,
           volume: k.volume,
-          quote_asset_volume: k.quote_asset_volume,
+          quoteAssetVolume: k.quote_asset_volume,
           openTime: k.open_time,
           closeTime: k.close_time
         })),
@@ -278,8 +278,8 @@ async saveConfiguration() {
   calculatePriceChange(klines) {
     if (klines.length < 2) return '0.00';
     
-    const firstPrice = parseFloat(klines[0].open_price);
-    const lastPrice = parseFloat(klines[klines.length - 1].close_price);
+    const firstPrice = parseFloat(klines[0].open);
+    const lastPrice = parseFloat(klines[klines.length - 1].close);
     const change = ((lastPrice - firstPrice) / firstPrice) * 100;
     
     return change.toFixed(2);
