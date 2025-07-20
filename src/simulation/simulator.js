@@ -106,7 +106,7 @@ export class TradingSimulator {
       // Генерація результатів
       const results = await this.generateResults(configId);
       logger.info(`Skipped listings: ${this.skippedListings}`);
-      logger.debug(`Skip reasons: ${JSON.stringify(this.skipReasonCounts)}`);
+      logger.info(`Skip reasons: ${JSON.stringify(this.skipReasonCounts)}`);
       logger.info('Simulation completed successfully');
       return results;
       
