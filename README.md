@@ -97,8 +97,8 @@ INITIAL_BALANCE_USDT=10000
 # Розмір позиції за замовчуванням
 DEFAULT_BUY_AMOUNT_USDT=50
 
-# Комісія Binance
-DEFAULT_BINANCE_FEE_PERCENT=0.00075
+# Комісія Binance (в %)
+DEFAULT_BINANCE_FEE_PERCENT=0.075
 
 # Таймаут очікування замкненої БД
 DB_BUSY_TIMEOUT_MS=5000

@@ -16,7 +16,7 @@ export class ConfigurationGenerator {
     const baseParams = {
       maxOpenTrades: 3,
       minLiquidityUsdt: 10000,
-      binanceFeePercent: 0.00075,
+      binanceFeePercent: 0.075, // Binance trading fee percent
       cooldownSeconds: 3600
     };
     
