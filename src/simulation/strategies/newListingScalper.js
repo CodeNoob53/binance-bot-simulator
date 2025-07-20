@@ -354,9 +354,9 @@ export class NewListingScalperStrategy extends BaseStrategy {
    * Отримання умов виходу
    */
   getExitConditions(entryPrice, config) {
-    const takeProfitPrice = entryPrice * (1 + config.takeProfitPercent / 100);
-    const stopLossPrice = entryPrice * (1 - config.stopLossPercent / 100);
-    const trailingStopActivationPrice = entryPrice * (1 + config.trailingStopActivationPercent / 100);
+    const takeProfitPrice = entryPrice * (1 + config.takeProfitPercent);
+    const stopLossPrice = entryPrice * (1 - config.stopLossPercent);
+    const trailingStopActivationPrice = entryPrice * (1 + config.trailingStopActivationPercent);
 
     return {
       takeProfitPrice,
