@@ -11,12 +11,14 @@ lerna-debug.log*
 node_modules/
 jspm_packages/
 
+
 # Production build artifacts
 dist/
-build/
+build/|
 .next/ # For Next.js projects
 .nuxt/ # For Nuxt.js projects
 out/ # Common for static site generation
+reports # For test reports
 
 # Local environment variables
 .env
@@ -34,6 +36,7 @@ out/ # Common for static site generation
 # OS generated files
 .DS_Store
 Thumbs.db
+reports
 
 # Test coverage
 coverage/
@@ -49,6 +52,5 @@ yarn.lock
 package-lock.json
 data/simulation.db
 .gitignore
-data/simulation.db-wal
-data/simulation.db-shm
-reports/simulation_report_1753047275796.json
+data
+

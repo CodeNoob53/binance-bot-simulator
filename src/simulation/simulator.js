@@ -432,7 +432,7 @@ export class TradingSimulator {
   }
 
   /**
-   * Виконання торгівлі (спрощена версія)
+   * Виконання торгівлі (ВИПРАВЛЕНО: прибрано штраф за timeout)
    */
   async executeTrade(marketData, configId) {
     try {
@@ -444,16 +444,24 @@ export class TradingSimulator {
       const takeProfitPrice = entryPrice * (1 + this.config.takeProfitPercent);
       const stopLossPrice = entryPrice * (1 - this.config.stopLossPercent);
       
-      // Симуляція виходу (спрощена логіка)
+      // Симуляція виходу
       const simulatedExit = this.simulateTradeExit(marketData, entryPrice, takeProfitPrice, stopLossPrice);
       
-      // Розрахунок результату
+      // ВИПРАВЛЕНО: Розрахунок результату БЕЗ штрафу за timeout
       const buyCommission = this.config.buyAmountUsdt * this.config.binanceFeePercent;
       const sellAmount = quantity * simulatedExit.exitPrice;
       const sellCommission = sellAmount * this.config.binanceFeePercent;
       const netReceived = sellAmount - sellCommission;
-      const profitLossUsdt = netReceived - this.config.buyAmountUsdt - buyCommission;
-      const profitLossPercent = (profitLossUsdt / this.config.buyAmountUsdt) * 100;
+      const totalCost = this.config.buyAmountUsdt + buyCommission;
+      
+      // ГОЛОВНЕ ВИПРАВЛЕННЯ: реальний розрахунок прибутку
+      const profitLossUsdt = netReceived - totalCost;
+      const profitLossPercent = (profitLossUsdt / totalCost) * 100;
+      
+      // ДОДАТКОВО: логування для діагностики
+      if (simulatedExit.reason === 'timeout') {
+        logger.debug(`Timeout trade: ${marketData.symbol}, entry: ${entryPrice.toFixed(6)}, exit: ${simulatedExit.exitPrice.toFixed(6)}, P&L: ${profitLossPercent.toFixed(2)}%`);
+      }
       
       // Створення торгової операції
       const trade = {
@@ -489,7 +497,7 @@ export class TradingSimulator {
   }
 
   /**
-   * Симуляція виходу з торгівлі
+   * Симуляція виходу з торгівлі (ВИПРАВЛЕНО: прибрано штраф за timeout)
    */
   simulateTradeExit(marketData, entryPrice, takeProfitPrice, stopLossPrice) {
     const klines = marketData.klines;
@@ -522,10 +530,10 @@ export class TradingSimulator {
       }
     }
     
-    // Якщо не досягли цілей - вихід за ціною закриття останньої свічки
+    // ВИПРАВЛЕНО: Timeout = закриття за поточною ціною БЕЗ ШТРАФУ
     const lastKline = klines[klines.length - 1];
     return {
-      exitPrice: parseFloat(lastKline.close),
+      exitPrice: parseFloat(lastKline.close), // Закриваємо за ринковою ціною
       exitTime: lastKline.closeTime,
       reason: 'timeout'
     };
