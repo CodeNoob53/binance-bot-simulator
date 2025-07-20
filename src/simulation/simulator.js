@@ -854,6 +854,7 @@ async saveConfiguration() {
     this.startTime = Date.now();
     this.processedListings = 0;
     this.skippedListings = 0;
+    this.skipReasonCounts = {};
   }
 }
 
