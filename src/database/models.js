@@ -195,81 +195,101 @@ export class SimulationConfigModel {
 
   async create(config) {
     const db = await this.dbPromise;
-    const result = await db.run(
-      `INSERT OR IGNORE INTO simulation_configs (
-        name, take_profit_percent, stop_loss_percent,
-        trailing_stop_enabled, trailing_stop_percent, trailing_stop_activation_percent,
-        buy_amount_usdt, max_open_trades, min_liquidity_usdt,
-        binance_fee_percent, cooldown_seconds
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      config.name,
-      config.takeProfitPercent,
-      config.stopLossPercent,
-      config.trailingStopEnabled,
-      config.trailingStopPercent,
-      config.trailingStopActivationPercent,
-      config.buyAmountUsdt,
-      config.maxOpenTrades,
-      config.minLiquidityUsdt,
-      config.binanceFeePercent,
-      config.cooldownSeconds
-    );
-    return result.lastID;
+    
+    // ВИПРАВЛЕНО: Спочатку перевіряємо чи конфігурація вже існує
+    const existingConfig = await this.findByName(config.name);
+    if (existingConfig) {
+      return existingConfig.id;
+    }
+    
+    try {
+      const result = await db.run(
+        `INSERT INTO simulation_configs (
+          name, take_profit_percent, stop_loss_percent,
+          trailing_stop_enabled, trailing_stop_percent, trailing_stop_activation_percent,
+          buy_amount_usdt, max_open_trades, min_liquidity_usdt,
+          binance_fee_percent, cooldown_seconds
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        config.name,
+        config.takeProfitPercent || config.take_profit_percent,
+        config.stopLossPercent || config.stop_loss_percent,
+        config.trailingStopEnabled ? 1 : 0,
+        config.trailingStopPercent || config.trailing_stop_percent || null,
+        config.trailingStopActivationPercent || config.trailing_stop_activation_percent || null,
+        config.buyAmountUsdt || config.buy_amount_usdt,
+        config.maxOpenTrades || config.max_open_trades,
+        config.minLiquidityUsdt || config.min_liquidity_usdt,
+        config.binanceFeePercent || config.binance_fee_percent,
+        config.cooldownSeconds || config.cooldown_seconds
+      );
+      
+      if (!result.lastID) {
+        throw new Error('Failed to insert configuration - no ID returned');
+      }
+      
+      return result.lastID;
+      
+    } catch (error) {
+      // Додаткове логування для діагностики
+      console.error('Database error details:', {
+        error: error.message,
+        config: config,
+        sqliteCode: error.code
+      });
+      throw new Error(`Failed to save configuration: ${error.message}`);
+    }
+  }
+
+  async findByName(name) {
+    const db = await this.dbPromise;
+    try {
+      return await db.get('SELECT * FROM simulation_configs WHERE name = ?', name);
+    } catch (error) {
+      console.error(`Error finding config by name ${name}:`, error.message);
+      return null;
+    }
   }
 
   async findById(id) {
     const db = await this.dbPromise;
-    return db.get('SELECT * FROM simulation_configs WHERE id = ?', id);
+    try {
+      return await db.get('SELECT * FROM simulation_configs WHERE id = ?', id);
+    } catch (error) {
+      console.error(`Error finding config by id ${id}:`, error.message);
+      return null;
+    }
   }
 
   async getAll() {
     const db = await this.dbPromise;
-    return db.all(`
-      SELECT
-        id,
-        name,
-        take_profit_percent AS takeProfitPercent,
-        stop_loss_percent AS stopLossPercent,
-        trailing_stop_enabled AS trailingStopEnabled,
-        trailing_stop_percent AS trailingStopPercent,
-        trailing_stop_activation_percent AS trailingStopActivationPercent,
-        buy_amount_usdt AS buyAmountUsdt,
-        max_open_trades AS maxOpenTrades,
-        min_liquidity_usdt AS minLiquidityUsdt,
-        binance_fee_percent AS binanceFeePercent,
-        cooldown_seconds AS cooldownSeconds,
-        created_at AS createdAt
-      FROM simulation_configs
-      ORDER BY id
-    `);
+    try {
+      return await db.all('SELECT * FROM simulation_configs ORDER BY created_at DESC');
+    } catch (error) {
+      console.error('Error getting all configs:', error.message);
+      return [];
+    }
   }
 
-  async getOptimized(limit = 10) {
+  async deleteById(id) {
     const db = await this.dbPromise;
-    return db.all(
-      `SELECT
-        sc.id,
-        sc.name,
-        sc.take_profit_percent AS takeProfitPercent,
-        sc.stop_loss_percent AS stopLossPercent,
-        sc.trailing_stop_enabled AS trailingStopEnabled,
-        sc.trailing_stop_percent AS trailingStopPercent,
-        sc.trailing_stop_activation_percent AS trailingStopActivationPercent,
-        sc.buy_amount_usdt AS buyAmountUsdt,
-        sc.max_open_trades AS maxOpenTrades,
-        sc.min_liquidity_usdt AS minLiquidityUsdt,
-        sc.binance_fee_percent AS binanceFeePercent,
-        sc.cooldown_seconds AS cooldownSeconds,
-        sc.created_at AS createdAt,
-        ss.roi_percent AS roiPercent,
-        ss.win_rate_percent AS winRatePercent,
-        ss.sharpe_ratio AS sharpeRatio
-       FROM simulation_configs sc
-       LEFT JOIN simulation_summary ss ON sc.id = ss.config_id
-       ORDER BY ss.roi_percent DESC NULLS LAST
-       LIMIT ?`,
-      limit
-    );
+    try {
+      const result = await db.run('DELETE FROM simulation_configs WHERE id = ?', id);
+      return result.changes;
+    } catch (error) {
+      console.error(`Error deleting config ${id}:`, error.message);
+      return 0;
+    }
+  }
+
+  async deleteByName(name) {
+    const db = await this.dbPromise;
+    try {
+      const result = await db.run('DELETE FROM simulation_configs WHERE name = ?', name);
+      return result.changes;
+    } catch (error) {
+      console.error(`Error deleting config ${name}:`, error.message);
+      return 0;
+    }
   }
 }
 

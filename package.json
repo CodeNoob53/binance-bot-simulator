@@ -9,6 +9,7 @@
     "collect": "node scripts/collect-data.js",
     "simulate": "node scripts/run-simulation.js",
     "clear_db": "node scripts/clear-configs.js",
+    "diagnose": "node scripts/database-diagnostics.js",
     "analyze": "node scripts/analyze-results.js",
     "db:init": "node src/database/init.js",
     "pretest": "npm install",

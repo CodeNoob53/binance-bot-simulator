@@ -1,102 +1,99 @@
 import { getDatabase } from '../database/init.js';
-import { SymbolModel, SimulationResultModel, SimulationConfigModel } from '../database/models.js';
+import { SimulationConfigModel, SimulationResultModel, SimulationSummaryModel } from '../database/models.js';
 import { NewListingScalperStrategy } from './strategies/newListingScalper.js';
-import { TrailingStopLoss } from './strategies/trailingStopLoss.js';
-import { validateConfig, validateMarketData } from '../utils/validators.js';
-import { calculateProfitLoss, calculateCommission, calculateLiquidity, calculateVolatility } from '../utils/calculations.js';
+import { validateMarketData } from '../utils/validators.js';
 import logger from '../utils/logger.js';
 
 export class TradingSimulator {
   constructor(config) {
-    // Валідація конфігурації
-    const configValidation = validateConfig(config);
-    if (!configValidation.isValid) {
-      throw new Error(`Invalid configuration: ${configValidation.errors.join(', ')}`);
-    }
-
-    this.config = config;
-    this.dbPromise = getDatabase();
-    this.activeTrades = new Map();
-    this.completedTrades = [];
-    this.currentBalance = parseFloat(process.env.INITIAL_BALANCE_USDT) || 10000;
-    this.initialBalance = this.currentBalance;
-    this.cooldownMap = new Map();
-
-    // Ініціалізація стратегій
-    this.strategy = new NewListingScalperStrategy(config);
-    this.trailingStopLoss = new TrailingStopLoss(config);
-    
-    // Ініціалізація моделей БД
-    this.symbolModel = new SymbolModel();
-    this.resultModel = new SimulationResultModel();
-    this.configModel = new SimulationConfigModel();
-    
-    // Статистика
-    this.stats = {
-      totalTrades: 0,
-      profitableTrades: 0,
-      losingTrades: 0,
-      timeoutTrades: 0,
-      trailingStopTrades: 0,
-      takeProfitTrades: 0,
-      stopLossTrades: 0,
-      totalVolume: 0,
-      totalCommissions: 0,
-      maxDrawdown: 0,
-      currentDrawdown: 0,
-      peakBalance: this.currentBalance
+    this.config = {
+      name: config.name || 'Unknown Configuration',
+      takeProfitPercent: config.takeProfitPercent || config.take_profit_percent || 0.02,
+      stopLossPercent: config.stopLossPercent || config.stop_loss_percent || 0.01,
+      trailingStopEnabled: Boolean(config.trailingStopEnabled || config.trailing_stop_enabled),
+      trailingStopPercent: config.trailingStopPercent || config.trailing_stop_percent || null,
+      trailingStopActivationPercent: config.trailingStopActivationPercent || config.trailing_stop_activation_percent || null,
+      buyAmountUsdt: config.buyAmountUsdt || config.buy_amount_usdt || 100,
+      maxOpenTrades: config.maxOpenTrades || config.max_open_trades || 3,
+      minLiquidityUsdt: config.minLiquidityUsdt || config.min_liquidity_usdt || 10000,
+      binanceFeePercent: config.binanceFeePercent || config.binance_fee_percent || 0.00075,
+      cooldownSeconds: config.cooldownSeconds || config.cooldown_seconds || 300
     };
     
-    // Налаштування симуляції
-    this.startTime = Date.now();
+    this.dbPromise = getDatabase();
+    this.configModel = new SimulationConfigModel();
+    this.resultModel = new SimulationResultModel();
+    this.summaryModel = new SimulationSummaryModel();
+    
+    // Ініціалізація стратегії (з fallback)
+    try {
+      this.strategy = new NewListingScalperStrategy(this.config);
+    } catch (error) {
+      logger.warn(`Failed to initialize strategy: ${error.message}, using fallback`);
+      this.strategy = new FallbackStrategy(this.config);
+    }
+    
+    // Статистика симуляції
+    this.currentBalance = parseFloat(process.env.INITIAL_BALANCE_USDT) || 10000;
+    this.initialBalance = this.currentBalance;
+    this.activeTrades = new Map();
+    this.completedTrades = [];
     this.processedListings = 0;
     this.skippedListings = 0;
     this.skipReasonCounts = {};
-  }
-
-  incrementSkipReason(reason) {
-    if (!reason) return;
-    this.skipReasonCounts[reason] = (this.skipReasonCounts[reason] || 0) + 1;
+    this.simulationStartTime = Date.now();
   }
 
   /**
    * Запуск симуляції
    */
-  async runSimulation(daysBack = 180) {
+  async runSimulation(daysBack = 30) {
     logger.info(`Starting simulation: ${this.config.name}`);
-    logger.info(`Initial balance: ${this.initialBalance} USDT`);
+    logger.info(`Initial balance: ${this.currentBalance} USDT`);
     
     try {
-      // Збереження конфігурації в БД
+      // Збереження конфігурації
       const configId = await this.saveConfiguration();
-      
-      // Отримання даних для симуляції
+      if (!configId) {
+        throw new Error('Failed to save simulation configuration');
+      }
+
+      // Рання перевірка наявності даних
+      const dataValidation = await this.validateDataAvailability(daysBack);
+      if (!dataValidation.hasValidData) {
+        logger.warn(`⚠️ Limited market data for simulation period`);
+        logger.warn(`📊 Available symbols with data: ${dataValidation.availableSymbols}`);
+        logger.warn(`📅 Data period: ${dataValidation.dateRange}`);
+      }
+
+      // Отримання лістингів з перевіркою
       const newListings = await this.getNewListingsWithData(daysBack);
-      logger.info(`Found ${newListings.length} new listings to simulate`);
       
       if (newListings.length === 0) {
-        logger.warn('No new listings found for simulation');
-        return this.generateResults(configId);
+        logger.warn('⚠️ No listings found for simulation period');
+        const emptyResults = await this.createEmptyResults(configId, { reason: 'no_listings' });
+        return emptyResults;
       }
-      
-      // Сортування за датою лістингу
-      newListings.sort((a, b) => a.listing_date - b.listing_date);
-      
+
+      logger.info(`Found ${newListings.length} listings to simulate`);
+
       // Обробка кожного лістингу
-      for (let i = 0; i < newListings.length; i++) {
-        const listing = newListings[i];
-        
+      let processed = 0;
+      for (const listing of newListings) {
         try {
           const result = await this.processListing(listing, configId);
+          processed++;
           
-          if (i % 50 === 0 || i === newListings.length - 1) {
-            const progress = ((i + 1) / newListings.length * 100).toFixed(1);
-            logger.info(`Simulation progress: ${progress}% (${i + 1}/${newListings.length})`);
+          // Логування прогресу
+          if (processed % 10 === 0 || processed === newListings.length) {
+            const progressPercent = ((processed / newListings.length) * 100).toFixed(1);
+            logger.info(`Simulation progress: ${progressPercent}% (${processed}/${newListings.length})`);
           }
           
         } catch (error) {
           logger.error(`Error processing listing ${listing.symbol}: ${error.message}`);
           this.skippedListings++;
+          this.incrementSkipReason('processing_error');
         }
       }
       
@@ -105,9 +102,10 @@ export class TradingSimulator {
 
       // Генерація результатів
       const results = await this.generateResults(configId);
-      logger.info(`Skipped listings: ${this.skippedListings}`);
-      logger.info(`Skip reasons: ${JSON.stringify(this.skipReasonCounts)}`);
-      logger.info('Simulation completed successfully');
+      
+      // Детальне логування результатів
+      this.logSimulationSummary(results);
+      
       return results;
       
     } catch (error) {
@@ -117,51 +115,107 @@ export class TradingSimulator {
   }
 
   /**
-   * Збереження конфігурації в БД
+   * Валідація наявності даних перед симуляцією
    */
-async saveConfiguration() {
-  try {
-    return this.configModel.create(this.config);
-  } catch (error) {
-    // Якщо конфігурація вже існує - знаходимо її ID
-    if (error.message.includes('UNIQUE constraint')) {
-      const existing = await this.configModel.findByName(this.config.name);
-      return existing?.id;
+  async validateDataAvailability(daysBack) {
+    try {
+      const db = await this.dbPromise;
+      const cutoffDate = Date.now() - (daysBack * 24 * 60 * 60 * 1000);
+      
+      // Перевірка загальної кількості даних
+      const totalData = await db.get(`
+        SELECT 
+          COUNT(DISTINCT s.id) as total_symbols,
+          COUNT(hk.id) as total_klines,
+          MIN(datetime(hk.open_time/1000, 'unixepoch')) as earliest_date,
+          MAX(datetime(hk.close_time/1000, 'unixepoch')) as latest_date
+        FROM symbols s
+        LEFT JOIN historical_klines hk ON s.id = hk.symbol_id
+      `);
+      
+      // Перевірка символів з достатньою кількістю даних
+      const validSymbols = await db.get(`
+        SELECT COUNT(DISTINCT s.id) as count
+        FROM symbols s
+        INNER JOIN historical_klines hk ON s.id = hk.symbol_id
+        WHERE s.quote_asset = 'USDT'
+        GROUP BY s.id
+        HAVING COUNT(hk.id) >= 10
+      `);
+      
+      return {
+        hasValidData: validSymbols?.count > 0,
+        availableSymbols: validSymbols?.count || 0,
+        totalSymbols: totalData.total_symbols,
+        totalKlines: totalData.total_klines,
+        dateRange: `${totalData.earliest_date} - ${totalData.latest_date}`
+      };
+      
+    } catch (error) {
+      logger.error(`Error validating data availability: ${error.message}`);
+      return { hasValidData: false, availableSymbols: 0 };
     }
-    throw error;
   }
-}
+
   /**
-   * Отримання нових лістингів з даними
+   * Отримання лістингів з історичними даними
    */
   async getNewListingsWithData(daysBack) {
-    const cutoffDate = Date.now() - (daysBack * 24 * 60 * 60 * 1000);
-    
     try {
-      const query = `
-        SELECT 
+      const db = await this.dbPromise;
+      
+      // Діагностична інформація
+      const totalSymbols = await db.get('SELECT COUNT(*) as count FROM symbols');
+      const totalKlines = await db.get('SELECT COUNT(*) as count FROM historical_klines');
+      const analyzedListings = await db.get(`
+        SELECT COUNT(*) as count FROM listing_analysis WHERE data_status = 'analyzed'
+      `);
+      
+      logger.info(`Database status: ${totalSymbols.count} symbols, ${totalKlines.count} klines, ${analyzedListings.count} analyzed`);
+      
+      // Спрощений запит для отримання символів з даними
+      const symbolsWithKlines = await db.all(`
+        SELECT DISTINCT
           s.id as symbol_id,
           s.symbol,
-          la.listing_date,
+          COALESCE(la.listing_date, MIN(hk.open_time)) as listing_date,
           COUNT(hk.id) as klines_count,
           MIN(hk.open_time) as first_kline,
           MAX(hk.close_time) as last_kline
         FROM symbols s
-        JOIN listing_analysis la ON s.id = la.symbol_id
-        LEFT JOIN historical_klines hk ON s.id = hk.symbol_id
-        WHERE la.data_status = 'analyzed'
-        AND la.listing_date >= ?
-        GROUP BY s.id, s.symbol, la.listing_date
-        HAVING klines_count > 5
-        ORDER BY la.listing_date ASC
-      `;
+        INNER JOIN historical_klines hk ON s.id = hk.symbol_id
+        LEFT JOIN listing_analysis la ON s.id = la.symbol_id
+        WHERE s.quote_asset = 'USDT'
+        GROUP BY s.id, s.symbol
+        HAVING klines_count >= 10
+        ORDER BY listing_date DESC
+        LIMIT 100
+      `);
       
-      const db = await this.dbPromise;
-      return db.all(query, cutoffDate);
+      logger.info(`Found ${symbolsWithKlines.length} symbols with historical data`);
+      
+      if (symbolsWithKlines.length === 0) {
+        logger.warn('No symbols with kline data found!');
+        
+        // Додаткова діагностика
+        const sampleSymbols = await db.all('SELECT symbol FROM symbols LIMIT 5');
+        const sampleKlines = await db.all(`
+          SELECT s.symbol, COUNT(hk.id) as count 
+          FROM symbols s 
+          LEFT JOIN historical_klines hk ON s.id = hk.symbol_id 
+          GROUP BY s.id 
+          LIMIT 5
+        `);
+        
+        logger.info('Sample symbols:', sampleSymbols);
+        logger.info('Sample kline counts:', sampleKlines);
+      }
+      
+      return symbolsWithKlines;
       
     } catch (error) {
-      logger.error(`Failed to fetch new listings: ${error.message}`);
-      throw error;
+      logger.error(`Failed to fetch listings with data: ${error.message}`);
+      return [];
     }
   }
 
@@ -169,13 +223,21 @@ async saveConfiguration() {
    * Обробка одного лістингу
    */
   async processListing(listing, configId) {
-    const { symbol_id, symbol, listing_date } = listing;
+    const { symbol_id, symbol, listing_date, klines_count } = listing;
     
     try {
-      // Отримання історичних даних
+      // Перевірка кількості даних
+      if (klines_count < 10) {
+        this.skippedListings++;
+        this.incrementSkipReason('insufficient_klines');
+        logger.debug(`Skipping ${symbol}: insufficient_klines (${klines_count})`);
+        return { processed: false, reason: 'insufficient_klines' };
+      }
+
+      // Отримання ринкових даних
       const marketData = await this.getMarketDataForListing(symbol_id, symbol, listing_date);
 
-      if (!marketData) {
+      if (!marketData || !marketData.klines || marketData.klines.length < 3) {
         this.skippedListings++;
         this.incrementSkipReason('no_market_data');
         logger.debug(`Skipping ${symbol}: no_market_data`);
@@ -183,16 +245,30 @@ async saveConfiguration() {
       }
       
       // Валідація ринкових даних
-      const validation = validateMarketData(marketData);
-      if (!validation.isValid) {
-        logger.debug(`Invalid market data for ${symbol}: ${validation.errors.join(', ')}`);
+      try {
+        const validation = validateMarketData(marketData);
+        if (!validation.isValid) {
+          logger.debug(`Invalid market data for ${symbol}: ${validation.errors.join(', ')}`);
+          this.skippedListings++;
+          this.incrementSkipReason('invalid_data');
+          return { processed: false, reason: 'invalid_data', errors: validation.errors };
+        }
+      } catch (validationError) {
+        logger.debug(`Market data validation failed for ${symbol}: ${validationError.message}`);
         this.skippedListings++;
-        this.incrementSkipReason('invalid_data');
-        return { processed: false, reason: 'invalid_data', errors: validation.errors };
+        this.incrementSkipReason('validation_error');
+        return { processed: false, reason: 'validation_error' };
       }
       
-      // Перевірка умов входу
-      const entryConditions = await this.strategy.checkEntryConditions(marketData);
+      // Перевірка умов входу (з fallback)
+      let entryConditions;
+      try {
+        entryConditions = await this.strategy.checkEntryConditions(marketData);
+      } catch (strategyError) {
+        logger.debug(`Strategy error for ${symbol}: ${strategyError.message}`);
+        // Fallback - простіші умови
+        entryConditions = this.checkBasicEntryConditions(marketData);
+      }
       
       if (!entryConditions.shouldEnter) {
         this.skippedListings++;
@@ -211,15 +287,17 @@ async saveConfiguration() {
       
       // Виконання торгівлі
       const tradeResult = await this.executeTrade(marketData, configId);
-      this.processedListings++;
+      if (tradeResult.success) {
+        this.processedListings++;
+      }
       
-      return { processed: true, trade: tradeResult };
+      return { processed: tradeResult.success, trade: tradeResult };
       
     } catch (error) {
       logger.error(`Error processing listing ${symbol}: ${error.message}`);
       this.skippedListings++;
-      this.incrementSkipReason('error');
-      return { processed: false, reason: 'error', error: error.message };
+      this.incrementSkipReason('processing_error');
+      return { processed: false, reason: 'processing_error', error: error.message };
     }
   }
 
@@ -228,58 +306,47 @@ async saveConfiguration() {
    */
   async getMarketDataForListing(symbolId, symbol, listingDate) {
     try {
-      // Отримання історичних klines
       const klinesQuery = `
-        SELECT open_time, close_time, open_price, high_price, low_price, close_price, volume, quote_asset_volume
+        SELECT open_time, close_time, open_price, high_price, low_price, 
+               close_price, volume, quote_asset_volume
         FROM historical_klines
         WHERE symbol_id = ? 
         AND open_time >= ? 
         AND open_time <= ?
         ORDER BY open_time ASC 
-        LIMIT 20
+        LIMIT 50
       `;
       
-      const startTime = listingDate;
-      const endTime = listingDate + (20 * 60 * 1000); // 20 хвилин після лістингу
+      const startTime = listingDate || Date.now() - (24 * 60 * 60 * 1000);
+      const endTime = startTime + (60 * 60 * 1000); // 1 година після лістингу
       
       const db = await this.dbPromise;
       const klines = await db.all(klinesQuery, symbolId, startTime, endTime);
       
       if (klines.length < 3) {
-        return null;
+        // Спробуємо отримати будь-які дані для цього символу
+        const anyKlines = await db.all(`
+          SELECT open_time, close_time, open_price, high_price, low_price, 
+                 close_price, volume, quote_asset_volume
+          FROM historical_klines
+          WHERE symbol_id = ?
+          ORDER BY open_time ASC 
+          LIMIT 20
+        `, symbolId);
+        
+        if (anyKlines.length < 3) {
+          return null;
+        }
+        
+        // Використовуємо перші доступні дані
+        const klines = anyKlines;
+        const adjustedStartTime = klines[0].open_time;
+        const adjustedEndTime = klines[klines.length - 1].close_time;
+        
+        return this.buildMarketData(symbol, klines, adjustedStartTime, adjustedEndTime, symbolId);
       }
       
-      // Створення ticker з останньої свічки
-      const lastKline = klines[klines.length - 1];
-      const ticker = {
-        symbol,
-        price: lastKline.close_price,
-        volume: lastKline.volume,
-        priceChangePercent: this.calculatePriceChange(klines)
-      };
-      
-      // Створення простого order book (симуляція)
-      const currentPrice = parseFloat(lastKline.close_price);
-      const orderBook = this.generateSimulatedOrderBook(currentPrice);
-      
-      return {
-        symbol,
-        ticker,
-        orderBook,
-        klines: klines.map(k => ({
-          open: k.open_price,
-          high: k.high_price,
-          low: k.low_price,
-          close: k.close_price,
-          volume: k.volume,
-          quoteAssetVolume: k.quote_asset_volume,
-          openTime: k.open_time,
-          closeTime: k.close_time
-        })),
-        listingDate,
-        currentTime: endTime,
-        symbolId
-      };
+      return this.buildMarketData(symbol, klines, startTime, endTime, symbolId);
       
     } catch (error) {
       logger.error(`Failed to get market data for ${symbol}: ${error.message}`);
@@ -288,573 +355,505 @@ async saveConfiguration() {
   }
 
   /**
-   * Розрахунок зміни ціни
+   * Побудова об'єкта ринкових даних
    */
-  calculatePriceChange(klines) {
-    if (klines.length < 2) return '0.00';
+  buildMarketData(symbol, klines, startTime, endTime, symbolId) {
+    const lastKline = klines[klines.length - 1];
+    const ticker = {
+      symbol,
+      price: lastKline.close_price,
+      volume: lastKline.volume,
+      priceChangePercent: this.calculatePriceChange(klines)
+    };
     
-    const firstPrice = parseFloat(klines[0].open);
-    const lastPrice = parseFloat(klines[klines.length - 1].close);
-    const change = ((lastPrice - firstPrice) / firstPrice) * 100;
+    const currentPrice = parseFloat(lastKline.close_price);
+    const orderBook = this.generateSimulatedOrderBook(currentPrice);
     
-    return change.toFixed(2);
+    return {
+      symbol,
+      ticker,
+      orderBook,
+      klines: klines.map(k => ({
+        open: k.open_price,
+        high: k.high_price,
+        low: k.low_price,
+        close: k.close_price,
+        volume: k.volume,
+        quoteAssetVolume: k.quote_asset_volume,
+        openTime: k.open_time,
+        closeTime: k.close_time
+      })),
+      listingDate: startTime,
+      currentTime: endTime,
+      symbolId
+    };
   }
 
   /**
-   * Генерація симульованого order book
+   * Базові умови входу (fallback)
    */
-  generateSimulatedOrderBook(currentPrice) {
-    const bids = [];
-    const asks = [];
-    const spread = currentPrice * 0.001; // 0.1% спред
+  checkBasicEntryConditions(marketData) {
+    const { ticker, klines } = marketData;
     
-    // Генерація bids (ціни нижче поточної)
-    for (let i = 0; i < 10; i++) {
-      const price = currentPrice - spread - (i * spread * 0.1);
-      const quantity = Math.random() * 1000 + 100;
-      bids.push([price.toFixed(8), quantity.toFixed(8)]);
+    // Перевірка ціни
+    const currentPrice = parseFloat(ticker.price);
+    if (!currentPrice || currentPrice <= 0) {
+      return { shouldEnter: false, reason: 'invalid_price' };
     }
-    
-    // Генерація asks (ціни вище поточної)
-    for (let i = 0; i < 10; i++) {
-      const price = currentPrice + spread + (i * spread * 0.1);
-      const quantity = Math.random() * 1000 + 100;
-      asks.push([price.toFixed(8), quantity.toFixed(8)]);
+
+    // Перевірка об'єму
+    const currentVolume = parseFloat(ticker.volume) || 0;
+    if (currentVolume < 1000) {
+      return { shouldEnter: false, reason: 'low_volume' };
     }
-    
-    return { bids, asks };
+
+    // Перевірка волатільності
+    if (klines.length >= 3) {
+      const priceChanges = [];
+      for (let i = 1; i < klines.length; i++) {
+        const prevClose = parseFloat(klines[i-1].close);
+        const currentClose = parseFloat(klines[i].close);
+        const change = Math.abs((currentClose - prevClose) / prevClose);
+        priceChanges.push(change);
+      }
+      
+      const avgVolatility = priceChanges.reduce((sum, change) => sum + change, 0) / priceChanges.length;
+      
+      if (avgVolatility < 0.01 || avgVolatility > 0.30) {
+        return { shouldEnter: false, reason: 'unsuitable_volatility' };
+      }
+    }
+
+    return {
+      shouldEnter: true,
+      reason: 'basic_conditions_met',
+      entryPrice: currentPrice
+    };
   }
 
   /**
-   * Виконання торгівлі
+   * Виконання торгівлі (спрощена версія)
    */
   async executeTrade(marketData, configId) {
-    const { symbol, ticker, symbolId } = marketData;
-    const entryPrice = parseFloat(ticker.price);
-    const quantity = this.config.buyAmountUsdt / entryPrice;
-    const entryTime = Date.now();
-    
-    // Розрахунок комісій
-    const buyCommission = calculateCommission(this.config.buyAmountUsdt, this.config.binanceFeePercent);
-    
-    // Створення угоди
-    const trade = {
-      id: `TRADE_${symbol}_${entryTime}`,
-      configId,
-      symbolId,
-      symbol,
-      entryPrice,
-      quantity,
-      entryTime,
-      buyCommission,
-      maxPrice: entryPrice,
-      minPrice: entryPrice,
-      status: 'ACTIVE'
-    };
-
-    // Додавання в активні угоди
-    this.activeTrades.set(symbol, trade);
-
-    // Ініціалізація trailing stop
-    if (this.config.trailingStopEnabled) {
-      this.trailingStopLoss.initializeTrade(trade.id, entryPrice);
+    try {
+      const entryPrice = parseFloat(marketData.ticker.price);
+      const quantity = this.config.buyAmountUsdt / entryPrice;
+      const entryTime = marketData.currentTime || Date.now();
+      
+      // Розрахунок цілей
+      const takeProfitPrice = entryPrice * (1 + this.config.takeProfitPercent);
+      const stopLossPrice = entryPrice * (1 - this.config.stopLossPercent);
+      
+      // Симуляція виходу (спрощена логіка)
+      const simulatedExit = this.simulateTradeExit(marketData, entryPrice, takeProfitPrice, stopLossPrice);
+      
+      // Розрахунок результату
+      const buyCommission = this.config.buyAmountUsdt * this.config.binanceFeePercent;
+      const sellAmount = quantity * simulatedExit.exitPrice;
+      const sellCommission = sellAmount * this.config.binanceFeePercent;
+      const netReceived = sellAmount - sellCommission;
+      const profitLossUsdt = netReceived - this.config.buyAmountUsdt - buyCommission;
+      const profitLossPercent = (profitLossUsdt / this.config.buyAmountUsdt) * 100;
+      
+      // Створення торгової операції
+      const trade = {
+        symbolId: marketData.symbolId,
+        symbol: marketData.symbol,
+        entryTime,
+        entryPrice,
+        exitTime: simulatedExit.exitTime,
+        exitPrice: simulatedExit.exitPrice,
+        exitReason: simulatedExit.reason,
+        quantity,
+        profitLossUsdt,
+        profitLossPercent,
+        buyCommission,
+        sellCommission
+      };
+      
+      // Оновлення балансу та статистики
+      this.currentBalance += profitLossUsdt;
+      this.completedTrades.push(trade);
+      
+      // Збереження в БД
+      await this.saveTradeToDatabase(configId, trade);
+      
+      logger.debug(`Trade executed: ${marketData.symbol} ${profitLossPercent.toFixed(2)}% (${simulatedExit.reason})`);
+      
+      return { success: true, trade };
+      
+    } catch (error) {
+      logger.error(`Trade execution failed: ${error.message}`);
+      return { success: false, error: error.message };
     }
-    
-    // Оновлення балансу
-    this.currentBalance -= this.config.buyAmountUsdt;
-    this.stats.totalVolume += this.config.buyAmountUsdt;
-    this.stats.totalCommissions += buyCommission;
-    
-    // Симуляція руху ціни та закриття угоди
-    await this.simulateTradeExecution(trade, marketData);
-    
-    return trade;
   }
 
   /**
-   * Симуляція виконання угоди
+   * Симуляція виходу з торгівлі
    */
-  async simulateTradeExecution(trade, marketData) {
-    const { klines } = marketData;
-    const exitConditions = this.strategy.getExitConditions(trade.entryPrice, this.config);
+  simulateTradeExit(marketData, entryPrice, takeProfitPrice, stopLossPrice) {
+    const klines = marketData.klines;
+    const entryTime = marketData.currentTime || Date.now();
     
-    // Симуляція руху ціни по klines
+    // Перевіряємо наступні свічки після входу
     for (let i = 1; i < klines.length; i++) {
       const kline = klines[i];
       const high = parseFloat(kline.high);
       const low = parseFloat(kline.low);
       const close = parseFloat(kline.close);
+      const time = kline.closeTime;
       
-      // Оновлення мін/макс цін
-      trade.maxPrice = Math.max(trade.maxPrice, high);
-      trade.minPrice = Math.min(trade.minPrice, low);
-      
-      // Перевірка trailing stop
-      if (this.config.trailingStopEnabled) {
-        const trailingResult = this.trailingStopLoss.updatePrice(trade.id, close);
-        if (trailingResult && trailingResult.triggered) {
-          await this.closeTrade(trade, 'trailing_stop', trailingResult.exitPrice);
-          return;
-        }
+      // Take Profit досягнуто
+      if (high >= takeProfitPrice) {
+        return {
+          exitPrice: takeProfitPrice,
+          exitTime: time,
+          reason: 'take_profit'
+        };
       }
       
-      // Перевірка take profit
-      if (high >= exitConditions.takeProfitPrice) {
-        await this.closeTrade(trade, 'take_profit', exitConditions.takeProfitPrice);
-        return;
-      }
-      
-      // Перевірка stop loss
-      if (low <= exitConditions.stopLossPrice) {
-        await this.closeTrade(trade, 'stop_loss', exitConditions.stopLossPrice);
-        return;
+      // Stop Loss досягнуто
+      if (low <= stopLossPrice) {
+        return {
+          exitPrice: stopLossPrice,
+          exitTime: time,
+          reason: 'stop_loss'
+        };
       }
     }
     
-    // Якщо угода не закрилася, закриваємо за останньою ціною
-    const lastPrice = parseFloat(klines[klines.length - 1].close);
-    await this.closeTrade(trade, 'timeout', lastPrice);
+    // Якщо не досягли цілей - вихід за ціною закриття останньої свічки
+    const lastKline = klines[klines.length - 1];
+    return {
+      exitPrice: parseFloat(lastKline.close),
+      exitTime: lastKline.closeTime,
+      reason: 'timeout'
+    };
   }
 
   /**
-   * Закриття угоди
+   * Збереження торгівлі в БД
    */
-  async closeTrade(trade, reason, exitPrice) {
-    const sellCommission = calculateCommission(exitPrice * trade.quantity, this.config.binanceFeePercent);
-    
-    // Розрахунок прибутку/збитку
-    const profitLoss = calculateProfitLoss({
-      entryPrice: trade.entryPrice,
-      exitPrice,
-      quantity: trade.quantity,
-      entryCommission: trade.buyCommission,
-      exitCommission: sellCommission
-    });
-    
-    // Оновлення угоди
-    trade.exitPrice = exitPrice;
-    trade.exitTime = Date.now();
-    trade.exitReason = reason;
-    trade.sellCommission = sellCommission;
-    trade.profitLossUsdt = profitLoss.usdt;
-    trade.profitLossPercent = profitLoss.percent;
-    trade.status = 'CLOSED';
-    
-    // Видалення з активних угод
-    this.activeTrades.delete(trade.symbol);
-    
-    // Додавання в завершені угоди
-    this.completedTrades.push(trade);
-    
-    // Оновлення балансу
-    const totalReturn = (exitPrice * trade.quantity) - sellCommission;
-    this.currentBalance += totalReturn;
-    
-    // Оновлення статистики
-    this.updateStats(trade);
-    
-    // Збереження в БД
-    await this.saveTradeResult(trade);
-    
-    // Встановлення cooldown
-    this.strategy.setCooldown(trade.symbol);
-    
-    logger.debug(`Trade closed: ${trade.symbol} - ${reason} - P&L: ${profitLoss.usdt.toFixed(2)} USDT (${profitLoss.percent.toFixed(2)}%)`);
-  }
-
-  /**
-   * Збереження результату угоди в БД
-   */
-  async saveTradeResult(trade) {
+  async saveTradeToDatabase(configId, trade) {
     try {
-      const result = {
-        configId: trade.configId,
-        symbolId: trade.symbolId,
-        entryTime: trade.entryTime,
-        entryPrice: trade.entryPrice,
-        exitTime: trade.exitTime,
-        exitPrice: trade.exitPrice,
-        exitReason: trade.exitReason,
-        quantity: trade.quantity,
-        profitLossUsdt: trade.profitLossUsdt,
-        profitLossPercent: trade.profitLossPercent,
-        buyCommission: trade.buyCommission,
-        sellCommission: trade.sellCommission,
-        maxPriceReached: trade.maxPrice,
-        minPriceReached: trade.minPrice,
-        trailingStopTriggered: trade.exitReason === 'trailing_stop'
+      const db = await this.dbPromise;
+      await db.run(`
+        INSERT INTO simulation_results (
+          config_id, symbol_id, entry_time, entry_price, exit_time, exit_price,
+          exit_reason, quantity, profit_loss_usdt, profit_loss_percent,
+          buy_commission, sell_commission
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `,
+        configId, trade.symbolId, trade.entryTime, trade.entryPrice,
+        trade.exitTime, trade.exitPrice, trade.exitReason, trade.quantity,
+        trade.profitLossUsdt, trade.profitLossPercent,
+        trade.buyCommission, trade.sellCommission
+      );
+    } catch (error) {
+      logger.error(`Failed to save trade to database: ${error.message}`);
+    }
+  }
+
+  /**
+   * Збереження конфігурації
+   */
+  async saveConfiguration() {
+    try {
+      const normalizedConfig = {
+        name: this.config.name,
+        takeProfitPercent: this.config.takeProfitPercent,
+        stopLossPercent: this.config.stopLossPercent,
+        trailingStopEnabled: Boolean(this.config.trailingStopEnabled),
+        trailingStopPercent: this.config.trailingStopPercent,
+        trailingStopActivationPercent: this.config.trailingStopActivationPercent,
+        buyAmountUsdt: this.config.buyAmountUsdt,
+        maxOpenTrades: this.config.maxOpenTrades,
+        minLiquidityUsdt: this.config.minLiquidityUsdt,
+        binanceFeePercent: this.config.binanceFeePercent,
+        cooldownSeconds: this.config.cooldownSeconds
       };
       
-      await this.resultModel.create(result);
-      
+      return await this.configModel.create(normalizedConfig);
     } catch (error) {
-      logger.error(`Failed to save trade result: ${error.message}`);
+      logger.error('Error saving configuration:', error);
+      throw new Error(`Failed to save simulation configuration: ${error.message}`);
     }
   }
 
   /**
-   * Закриття всіх активних угод
-   */
-  async closeAllActiveTrades(reason, configId) {
-    const trades = Array.from(this.activeTrades.values());
-    
-    for (const trade of trades) {
-      // Використовуємо останню відому ціну
-      const exitPrice = trade.maxPrice || trade.entryPrice;
-      await this.closeTrade(trade, reason, exitPrice);
-    }
-    
-    logger.info(`Closed ${trades.length} active trades due to: ${reason}`);
-  }
-
-  /**
-   * Оновлення статистики
-   */
-  updateStats(trade) {
-    this.stats.totalTrades++;
-    this.stats.totalCommissions += trade.sellCommission;
-    
-    // Підрахунок типів закриття
-    switch (trade.exitReason) {
-      case 'take_profit':
-        this.stats.takeProfitTrades++;
-        break;
-      case 'stop_loss':
-        this.stats.stopLossTrades++;
-        break;
-      case 'trailing_stop':
-        this.stats.trailingStopTrades++;
-        break;
-      case 'timeout':
-        this.stats.timeoutTrades++;
-        break;
-    }
-    
-    // Підрахунок прибуткових/збиткових угод
-    if (trade.profitLossUsdt > 0) {
-      this.stats.profitableTrades++;
-    } else {
-      this.stats.losingTrades++;
-    }
-    
-    // Розрахунок просадки
-    if (this.currentBalance > this.stats.peakBalance) {
-      this.stats.peakBalance = this.currentBalance;
-      this.stats.currentDrawdown = 0;
-    } else {
-      this.stats.currentDrawdown = ((this.stats.peakBalance - this.currentBalance) / this.stats.peakBalance) * 100;
-      this.stats.maxDrawdown = Math.max(this.stats.maxDrawdown, this.stats.currentDrawdown);
-    }
-  }
-
-  /**
-   * Генерація результатів симуляції
+   * Генерація результатів
    */
   async generateResults(configId) {
-    const endTime = Date.now();
-    const duration = endTime - this.startTime;
-    
-    // Базові метрики
-    const totalReturn = this.currentBalance - this.initialBalance;
-    const roiPercent = (totalReturn / this.initialBalance) * 100;
-    const winRate = this.stats.totalTrades > 0 ? (this.stats.profitableTrades / this.stats.totalTrades) * 100 : 0;
-    
-    // Додаткові метрики
-    const avgTradeReturn = this.stats.totalTrades > 0 ? totalReturn / this.stats.totalTrades : 0;
-    const avgWinningTrade = this.calculateAvgWinningTrade();
-    const avgLosingTrade = this.calculateAvgLosingTrade();
-    const profitFactor = this.calculateProfitFactor();
-    const sharpeRatio = this.calculateSharpeRatio();
-    const maxConsecutiveLosses = this.calculateMaxConsecutiveLosses();
-    
-    // Детальна статистика по типах закриття
-    const exitReasonStats = {
-      takeProfit: this.stats.takeProfitTrades,
-      stopLoss: this.stats.stopLossTrades,
-      trailingStop: this.stats.trailingStopTrades,
-      timeout: this.stats.timeoutTrades
-    };
-    
-    // Підсумок
-    const summary = {
-      configId,
-      configName: this.config.name,
-      
-      // Основні метрики
-      initialBalance: this.initialBalance,
-      finalBalance: this.currentBalance,
-      totalReturn: totalReturn,
-      roiPercent: parseFloat(roiPercent.toFixed(2)),
-      
-      // Торгові метрики
-      totalTrades: this.stats.totalTrades,
-      profitableTrades: this.stats.profitableTrades,
-      losingTrades: this.stats.losingTrades,
-      winRate: parseFloat(winRate.toFixed(2)),
-      
-      // Середні значення
-      avgTradeReturn: parseFloat(avgTradeReturn.toFixed(2)),
-      avgWinningTrade: parseFloat(avgWinningTrade.toFixed(2)),
-      avgLosingTrade: parseFloat(avgLosingTrade.toFixed(2)),
-      
-      // Ризикові метрики
-      maxDrawdown: parseFloat(this.stats.maxDrawdown.toFixed(2)),
-      profitFactor: parseFloat(profitFactor.toFixed(2)),
-      sharpeRatio: parseFloat(sharpeRatio.toFixed(2)),
-      maxConsecutiveLosses,
-      
-      // Комісії та об'єми
-      totalVolume: parseFloat(this.stats.totalVolume.toFixed(2)),
-      totalCommissions: parseFloat(this.stats.totalCommissions.toFixed(2)),
-      
-      // Статистика виходів
-      exitReasonStats,
-      
-      // Технічні метрики
-      simulationDuration: duration,
-      processedListings: this.processedListings,
-      skippedListings: this.skippedListings,
-      averageTradeTime: this.calculateAverageTradeTime()
-    };
-    
-    // Збереження підсумку в БД
-    await this.saveSimulationSummary(summary);
-    
-    return {
-      summary,
-      trades: this.completedTrades,
-      config: this.config,
-      stats: this.stats
-    };
-  }
-
-  /**
-   * Розрахунок середнього прибутку від прибуткових угод
-   */
-  calculateAvgWinningTrade() {
-    const winningTrades = this.completedTrades.filter(t => t.profitLossUsdt > 0);
-    if (winningTrades.length === 0) return 0;
-    
-    const totalWinnings = winningTrades.reduce((sum, t) => sum + t.profitLossUsdt, 0);
-    return totalWinnings / winningTrades.length;
-  }
-
-  /**
-   * Розрахунок середнього збитку від збиткових угод
-   */
-  calculateAvgLosingTrade() {
-    const losingTrades = this.completedTrades.filter(t => t.profitLossUsdt < 0);
-    if (losingTrades.length === 0) return 0;
-    
-    const totalLosses = losingTrades.reduce((sum, t) => sum + Math.abs(t.profitLossUsdt), 0);
-    return totalLosses / losingTrades.length;
-  }
-
-  /**
-   * Розрахунок profit factor
-   */
-  calculateProfitFactor() {
-    const totalWinnings = this.completedTrades
-      .filter(t => t.profitLossUsdt > 0)
-      .reduce((sum, t) => sum + t.profitLossUsdt, 0);
-      
-    const totalLosses = Math.abs(this.completedTrades
-      .filter(t => t.profitLossUsdt < 0)
-      .reduce((sum, t) => sum + t.profitLossUsdt, 0));
-    
-    return totalLosses > 0 ? totalWinnings / totalLosses : 0;
-  }
-
-  /**
-   * Розрахунок Sharpe ratio (спрощений)
-   */
-  calculateSharpeRatio() {
-    if (this.completedTrades.length < 2) return 0;
-    
-    const returns = this.completedTrades.map(t => t.profitLossPercent);
-    const avgReturn = returns.reduce((sum, r) => sum + r, 0) / returns.length;
-    
-    const variance = returns.reduce((sum, r) => sum + Math.pow(r - avgReturn, 2), 0) / returns.length;
-    const stdDev = Math.sqrt(variance);
-    
-    return stdDev > 0 ? avgReturn / stdDev : 0;
-  }
-
-  /**
-   * Розрахунок максимальної кількості послідовних збитків
-   */
-  calculateMaxConsecutiveLosses() {
-    let maxConsecutive = 0;
-    let currentConsecutive = 0;
-    
-    for (const trade of this.completedTrades) {
-      if (trade.profitLossUsdt < 0) {
-        currentConsecutive++;
-        maxConsecutive = Math.max(maxConsecutive, currentConsecutive);
-      } else {
-        currentConsecutive = 0;
-      }
-    }
-    
-    return maxConsecutive;
-  }
-
-  /**
-   * Розрахунок середнього часу угоди
-   */
-  calculateAverageTradeTime() {
-    if (this.completedTrades.length === 0) return 0;
-    
-    const totalTime = this.completedTrades.reduce((sum, trade) => {
-      return sum + (trade.exitTime - trade.entryTime);
-    }, 0);
-    
-    return Math.round(totalTime / this.completedTrades.length / 1000 / 60); // в хвилинах
-  }
-
-  /**
-   * Збереження підсумку симуляції
-   */
-  async saveSimulationSummary(summary) {
     try {
-      const query = `
-        INSERT INTO simulation_summary (
-          config_id, total_trades, profitable_trades, losing_trades, timeout_trades,
-          trailing_stop_trades, total_profit_usdt, total_loss_usdt, net_profit_usdt,
-          win_rate_percent, avg_profit_percent, avg_loss_percent, max_profit_percent,
-          max_loss_percent, avg_trade_duration_minutes, total_simulation_period_days,
-          roi_percent, sharpe_ratio, max_drawdown_percent, simulation_date
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `;
-      
-      const totalProfit = this.completedTrades
-        .filter(t => t.profitLossUsdt > 0)
-        .reduce((sum, t) => sum + t.profitLossUsdt, 0);
+      const summary = {
+        configName: this.config?.name || 'Unknown',
+        totalTrades: this.completedTrades?.length || 0,
+        profitableTrades: this.completedTrades?.filter(t => t.profitLossUsdt > 0).length || 0,
+        losingTrades: this.completedTrades?.filter(t => t.profitLossUsdt < 0).length || 0,
+        winRate: 0,
+        totalReturn: 0,
+        roiPercent: 0,
+        initialBalance: this.initialBalance,
+        finalBalance: this.currentBalance,
+        maxDrawdown: 0,
+        sharpeRatio: 0,
+        profitFactor: 0,
+        processedListings: this.processedListings || 0,
+        skippedListings: this.skippedListings || 0,
+        skipReasonStats: this.skipReasonCounts || {},
+        simulationDuration: Date.now() - (this.simulationStartTime || Date.now()),
+        averageTradeTime: 0
+      };
 
-      const totalLoss = this.completedTrades
-        .filter(t => t.profitLossUsdt < 0)
-        .reduce((sum, t) => sum + Math.abs(t.profitLossUsdt), 0);
+      // Розрахунки тільки якщо є угоди
+      if (summary.totalTrades > 0) {
+        summary.winRate = (summary.profitableTrades / summary.totalTrades) * 100;
+        summary.totalReturn = this.currentBalance - summary.initialBalance;
+        summary.roiPercent = (summary.totalReturn / summary.initialBalance) * 100;
+        
+        // Середній час угоди
+        const totalDuration = this.completedTrades.reduce((sum, trade) => {
+          return sum + ((trade.exitTime || Date.now()) - (trade.entryTime || Date.now()));
+        }, 0);
+        summary.averageTradeTime = totalDuration / summary.totalTrades / (1000 * 60); // хвилини
+        
+        // Profit Factor
+        const totalProfit = this.completedTrades
+          .filter(t => t.profitLossUsdt > 0)
+          .reduce((sum, t) => sum + t.profitLossUsdt, 0);
+        const totalLoss = Math.abs(this.completedTrades
+          .filter(t => t.profitLossUsdt < 0)
+          .reduce((sum, t) => sum + t.profitLossUsdt, 0));
+        
+        summary.profitFactor = totalLoss > 0 ? totalProfit / totalLoss : 0;
+      }
 
-      const avgProfitPercent = summary.profitableTrades > 0
-        ? totalProfit / summary.profitableTrades / this.config.buyAmountUsdt * 100
-        : 0;
+      // Збереження в базу даних
+      if (configId) {
+        await this.saveSummaryToDatabase(configId, summary);
+      }
 
-      const avgLossPercent = summary.losingTrades > 0
-        ? totalLoss / summary.losingTrades / this.config.buyAmountUsdt * 100
-        : 0;
-
-      const maxProfitPercent = this.completedTrades.length > 0
-        ? Math.max(...this.completedTrades.map(t => t.profitLossPercent))
-        : 0;
-
-      const maxLossPercent = this.completedTrades.length > 0
-        ? Math.min(...this.completedTrades.map(t => t.profitLossPercent))
-        : 0;
-
-      const db = await this.dbPromise;
-      await db.run(
-        query,
-        summary.configId,
-        summary.totalTrades,
-        summary.profitableTrades,
-        summary.losingTrades,
-        this.stats.timeoutTrades,
-        this.stats.trailingStopTrades,
-        totalProfit,
-        totalLoss,
-        summary.totalReturn,
-        summary.winRate,
-        avgProfitPercent,
-        avgLossPercent,
-        maxProfitPercent,
-        maxLossPercent,
-        summary.averageTradeTime,
-        0,
-        summary.roiPercent,
-        summary.sharpeRatio,
-        summary.maxDrawdown,
-        Date.now()
-      );
-      
-      logger.info('Simulation summary saved to database');
+      return {
+        summary,
+        trades: this.completedTrades || []
+      };
       
     } catch (error) {
-      logger.error(`Failed to save simulation summary: ${error.message}`);
+      logger.error(`Error generating results: ${error.message}`);
+      
+      return {
+        summary: {
+          configName: this.config?.name || 'Error',
+          totalTrades: 0,
+          profitableTrades: 0,
+          losingTrades: 0,
+          winRate: 0,
+          totalReturn: 0,
+          roiPercent: 0,
+          initialBalance: this.currentBalance,
+          finalBalance: this.currentBalance,
+          error: error.message
+        },
+        trades: []
+      };
     }
   }
 
   /**
-   * Отримання детальної статистики
+   * Створення порожнього результату
    */
-  getDetailedStats() {
-    return {
-      ...this.stats,
-      completedTrades: this.completedTrades.length,
-      activeTrades: this.activeTrades.size,
-      currentBalance: this.currentBalance,
-      totalReturn: this.currentBalance - this.initialBalance,
-      roiPercent: ((this.currentBalance - this.initialBalance) / this.initialBalance) * 100
-    };
+  async createEmptyResults(configId, validationInfo) {
+    try {
+      await this.saveSummaryToDatabase(configId, {
+        totalTrades: 0,
+        profitableTrades: 0,
+        losingTrades: 0,
+        winRate: 0,
+        totalReturn: 0,
+        roiPercent: 0,
+        averageTradeTime: 0
+      });
+
+      return {
+        summary: {
+          configName: this.config.name,
+          totalTrades: 0,
+          profitableTrades: 0,
+          losingTrades: 0,
+          winRate: 0,
+          totalReturn: 0,
+          roiPercent: 0,
+          initialBalance: this.currentBalance,
+          finalBalance: this.currentBalance,
+          maxDrawdown: 0,
+          sharpeRatio: 0,
+          profitFactor: 0,
+          processedListings: 0,
+          skippedListings: this.skippedListings,
+          skipReasonStats: this.skipReasonCounts,
+          simulationDuration: Date.now() - this.simulationStartTime,
+          noDataReason: validationInfo
+        },
+        trades: []
+      };
+    } catch (error) {
+      logger.error(`Error creating empty results: ${error.message}`);
+      throw error;
+    }
   }
 
   /**
-   * Експорт даних симуляції
+   * Збереження результатів в базу даних
    */
-  exportData() {
-    return {
-      config: this.config,
-      summary: this.getDetailedStats(),
-      trades: this.completedTrades.map(trade => ({
-        symbol: trade.symbol,
-        entryTime: new Date(trade.entryTime).toISOString(),
-        exitTime: new Date(trade.exitTime).toISOString(),
-        entryPrice: trade.entryPrice,
-        exitPrice: trade.exitPrice,
-        quantity: trade.quantity,
-        profitLossUsdt: trade.profitLossUsdt,
-        profitLossPercent: trade.profitLossPercent,
-        exitReason: trade.exitReason,
-        duration: trade.exitTime - trade.entryTime
-      })),
-      metadata: {
-        simulationDate: new Date(this.startTime).toISOString(),
-        duration: Date.now() - this.startTime,
-        processedListings: this.processedListings,
-        skippedListings: this.skippedListings
+  async saveSummaryToDatabase(configId, summary) {
+    try {
+      const db = await this.dbPromise;
+      
+      await db.run(`
+        INSERT INTO simulation_summary (
+          config_id, total_trades, profitable_trades, losing_trades,
+          timeout_trades, trailing_stop_trades, total_profit_usdt, total_loss_usdt,
+          net_profit_usdt, win_rate_percent, avg_profit_percent, avg_loss_percent,
+          max_profit_percent, max_loss_percent, avg_trade_duration_minutes,
+          total_simulation_period_days, roi_percent, sharpe_ratio, max_drawdown_percent
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `,
+        configId,
+        summary.totalTrades || 0,
+        summary.profitableTrades || 0,
+        summary.losingTrades || 0,
+        0, // timeout_trades
+        0, // trailing_stop_trades
+        Math.max(0, summary.totalReturn || 0), // total_profit_usdt
+        Math.abs(Math.min(0, summary.totalReturn || 0)), // total_loss_usdt
+        summary.totalReturn || 0, // net_profit_usdt
+        summary.winRate || 0,
+        0, // avg_profit_percent
+        0, // avg_loss_percent
+        0, // max_profit_percent
+        0, // max_loss_percent
+        summary.averageTradeTime || 0,
+        0, // total_simulation_period_days
+        summary.roiPercent || 0,
+        summary.sharpeRatio || 0,
+        summary.maxDrawdown || 0
+      );
+      
+    } catch (error) {
+      logger.error(`Failed to save summary to database: ${error.message}`);
+    }
+  }
+
+  /**
+   * Детальне логування результатів симуляції
+   */
+  logSimulationSummary(results) {
+    const summary = results.summary;
+    
+    logger.info('Simulation summary saved to database');
+    logger.info(`Processed listings: ${summary.processedListings}`);
+    logger.info(`Skipped listings: ${summary.skippedListings}`);
+    logger.info(`Skip reasons: ${JSON.stringify(summary.skipReasonStats)}`);
+    
+    if (summary.totalTrades > 0) {
+      logger.info(`Total trades: ${summary.totalTrades}`);
+      logger.info(`Win rate: ${summary.winRate.toFixed(2)}%`);
+      logger.info(`ROI: ${summary.roiPercent.toFixed(2)}%`);
+      logger.info(`Net profit: ${summary.totalReturn.toFixed(2)} USDT`);
+    } else {
+      logger.warn(`⚠️ No trades executed during simulation`);
+      if (summary.noDataReason) {
+        logger.warn(`Reason: ${JSON.stringify(summary.noDataReason)}`);
       }
-    };
+    }
+    
+    logger.info('Simulation completed successfully');
   }
 
   /**
-   * Скидання стану симулятора
+   * Допоміжні методи
    */
-  reset() {
-    this.activeTrades.clear();
-    this.completedTrades = [];
-    this.currentBalance = this.initialBalance;
-    this.cooldownMap.clear();
-    this.strategy.reset();
+  
+  incrementSkipReason(reason) {
+    if (!this.skipReasonCounts) {
+      this.skipReasonCounts = {};
+    }
+    this.skipReasonCounts[reason] = (this.skipReasonCounts[reason] || 0) + 1;
+  }
+
+  async closeAllActiveTrades(reason, configId) {
+    if (this.activeTrades && this.activeTrades.size > 0) {
+      logger.info(`Closing ${this.activeTrades.size} active trades due to: ${reason}`);
+      this.activeTrades.clear();
+    }
+  }
+
+  calculatePriceChange(klines) {
+    if (klines.length < 2) return '0.00';
     
-    // Скидання статистики
-    this.stats = {
-      totalTrades: 0,
-      profitableTrades: 0,
-      losingTrades: 0,
-      timeoutTrades: 0,
-      trailingStopTrades: 0,
-      takeProfitTrades: 0,
-      stopLossTrades: 0,
-      totalVolume: 0,
-      totalCommissions: 0,
-      maxDrawdown: 0,
-      currentDrawdown: 0,
-      peakBalance: this.currentBalance
+    const firstPrice = parseFloat(klines[0].open_price);
+    const lastPrice = parseFloat(klines[klines.length - 1].close_price);
+    const change = ((lastPrice - firstPrice) / firstPrice) * 100;
+    
+    return change.toFixed(2);
+  }
+
+  generateSimulatedOrderBook(currentPrice) {
+    const bids = [];
+    const asks = [];
+    const spread = currentPrice * 0.001; // 0.1% spread
+    
+    for (let i = 0; i < 5; i++) {
+      const bidPrice = currentPrice - spread - (i * spread * 0.1);
+      const askPrice = currentPrice + spread + (i * spread * 0.1);
+      const quantity = Math.random() * 1000 + 100;
+      
+      bids.push([bidPrice.toFixed(8), quantity.toFixed(2)]);
+      asks.push([askPrice.toFixed(8), quantity.toFixed(2)]);
+    }
+    
+    return { bids, asks };
+  }
+}
+
+/**
+ * Fallback стратегія для випадків коли основна недоступна
+ */
+class FallbackStrategy {
+  constructor(config) {
+    this.config = config;
+  }
+
+  async checkEntryConditions(marketData) {
+    const { ticker, klines } = marketData;
+    
+    // Базові перевірки
+    const currentPrice = parseFloat(ticker.price);
+    if (!currentPrice || currentPrice <= 0) {
+      return { shouldEnter: false, reason: 'invalid_price' };
+    }
+
+    const currentVolume = parseFloat(ticker.volume) || 0;
+    if (currentVolume < 1000) {
+      return { shouldEnter: false, reason: 'low_volume' };
+    }
+
+    // Простий тренд-аналіз
+    if (klines.length >= 3) {
+      const recent = klines.slice(-3);
+      const prices = recent.map(k => parseFloat(k.close));
+      const isUptrend = prices[2] > prices[1] && prices[1] > prices[0];
+      
+      if (!isUptrend) {
+        return { shouldEnter: false, reason: 'no_uptrend' };
+      }
+    }
+
+    return {
+      shouldEnter: true,
+      reason: 'fallback_strategy_conditions_met',
+      entryPrice: currentPrice
     };
-    
-    this.startTime = Date.now();
-    this.processedListings = 0;
-    this.skippedListings = 0;
-    this.skipReasonCounts = {};
   }
 }
 

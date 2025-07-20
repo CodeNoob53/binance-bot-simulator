@@ -51,3 +51,4 @@ data/simulation.db
 .gitignore
 data/simulation.db-wal
 data/simulation.db-shm
+reports/simulation_report_1753047275796.json

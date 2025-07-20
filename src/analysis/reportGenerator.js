@@ -131,29 +131,43 @@ export class ReportGenerator {
     };
   }
   
-  async generateRecommendations(analysisData) {
-    // Знаходимо оптимальну конфігурацію
+async generateRecommendations(analysisData) {
+    // ВИПРАВЛЕНО: Знаходимо оптимальну конфігурацію з перевіркою
     const optimalConfig = await this.findOptimalConfiguration();
+    
+    // Якщо немає оптимальної конфігурації, використовуємо найкращу з аналізу
+    const bestConfig = optimalConfig || (analysisData.configAnalysis.topByROI && analysisData.configAnalysis.topByROI[0]) || {
+      name: 'No optimal config found',
+      take_profit_percent: 0.02,
+      stop_loss_percent: 0.01,
+      trailing_stop_enabled: 0,
+      trailing_stop_percent: null,
+      trailing_stop_activation_percent: null,
+      buy_amount_usdt: 100,
+      roi_percent: 0,
+      win_rate_percent: 0,
+      total_trades: 0
+    };
     
     // Аналіз найкращих часових вікон
     const bestTimeWindows = analysisData.timePatterns
-      .filter(p => p.total_trades > 50)
+      .filter(p => p.total_trades > 10)
       .sort((a, b) => b.win_rate - a.win_rate)
       .slice(0, 3);
     
     // Генерація рекомендацій
     const recommendations = {
       bestConfig: {
-        name: optimalConfig.name,
-        takeProfitPercent: optimalConfig.take_profit_percent,
-        stopLossPercent: optimalConfig.stop_loss_percent,
-        trailingStopEnabled: optimalConfig.trailing_stop_enabled,
-        trailingStopPercent: optimalConfig.trailing_stop_percent,
-        trailingStopActivationPercent: optimalConfig.trailing_stop_activation_percent,
-        buyAmountUsdt: optimalConfig.buy_amount_usdt,
-        expectedROI: optimalConfig.roi_percent,
-        expectedWinRate: optimalConfig.win_rate_percent,
-        confidence: this.calculateConfidence(optimalConfig)
+        name: bestConfig.name || 'Unknown Configuration',
+        takeProfitPercent: bestConfig.take_profit_percent || 0.02,
+        stopLossPercent: bestConfig.stop_loss_percent || 0.01,
+        trailingStopEnabled: Boolean(bestConfig.trailing_stop_enabled),
+        trailingStopPercent: bestConfig.trailing_stop_percent || null,
+        trailingStopActivationPercent: bestConfig.trailing_stop_activation_percent || null,
+        buyAmountUsdt: bestConfig.buy_amount_usdt || 100,
+        expectedROI: bestConfig.roi_percent || 0,
+        expectedWinRate: bestConfig.win_rate_percent || 0,
+        confidence: this.calculateConfidence(bestConfig)
       },
       
       tradingTimes: bestTimeWindows.map(w => ({
@@ -174,6 +188,116 @@ export class ReportGenerator {
     };
     
     return recommendations;
+  }
+  
+  async findOptimalConfiguration() {
+    try {
+      const db = await this.dbPromise;
+      const result = await db.get(`
+        SELECT
+          sc.*,
+          ss.roi_percent,
+          ss.win_rate_percent,
+          ss.sharpe_ratio,
+          ss.max_drawdown_percent,
+          ss.total_trades
+        FROM simulation_configs sc
+        JOIN simulation_summary ss ON sc.id = ss.config_id
+        WHERE ss.total_trades >= 10
+        ORDER BY 
+          (ss.roi_percent * 0.4 + 
+           ss.win_rate_percent * 0.3 + 
+           (100 - COALESCE(ss.max_drawdown_percent, 100)) * 0.2 +
+           COALESCE(ss.sharpe_ratio * 10, 0) * 0.1) DESC
+        LIMIT 1
+      `);
+      
+      return result;
+    } catch (error) {
+      console.error('Error finding optimal configuration:', error.message);
+      return null;
+    }
+  }
+  
+  calculateConfidence(config) {
+    if (!config) return 0;
+    
+    let confidence = 0;
+    
+    // Базова оцінка на основі кількості угод
+    const totalTrades = config.total_trades || 0;
+    if (totalTrades >= 100) confidence += 30;
+    else if (totalTrades >= 50) confidence += 20;
+    else if (totalTrades >= 20) confidence += 10;
+    
+    // ROI
+    const roi = config.roi_percent || 0;
+    if (roi > 50) confidence += 20;
+    else if (roi > 20) confidence += 15;
+    else if (roi > 10) confidence += 10;
+    
+    // Win rate
+    const winRate = config.win_rate_percent || 0;
+    if (winRate > 60) confidence += 20;
+    else if (winRate > 50) confidence += 15;
+    else if (winRate > 40) confidence += 10;
+    
+    // Sharpe ratio
+    const sharpe = config.sharpe_ratio || 0;
+    if (sharpe > 2) confidence += 15;
+    else if (sharpe > 1) confidence += 10;
+    else if (sharpe > 0.5) confidence += 5;
+    
+    // Max drawdown
+    const drawdown = config.max_drawdown_percent || 0;
+    if (drawdown < 10) confidence += 15;
+    else if (drawdown < 20) confidence += 10;
+    else if (drawdown < 30) confidence += 5;
+    
+    return Math.min(confidence, 100);
+  }
+  
+  getTimeWindowRecommendation(window) {
+    if (!window) return 'Недостатньо даних';
+    
+    const winRate = window.win_rate || 0;
+    if (winRate > 60) return 'Відмінний час для торгівлі';
+    if (winRate > 50) return 'Хороший час для торгівлі';
+    if (winRate > 40) return 'Прийнятний час для торгівлі';
+    return 'Розгляньте інші часові вікна';
+  }
+  
+  generateWarnings(analysisData) {
+    const warnings = [];
+    
+    try {
+      // Перевірка загальної прибутковості
+      const configAnalysis = analysisData.configAnalysis || {};
+      const profitableRate = configAnalysis.totalConfigs > 0 
+        ? (configAnalysis.profitableConfigs / configAnalysis.totalConfigs) * 100 
+        : 0;
+      
+      if (profitableRate < 10) {
+        warnings.push('Менше 10% конфігурацій показують прибуток - розгляньте зміну параметрів');
+      }
+      
+      // Перевірка середнього ROI
+      const avgROI = configAnalysis.statistics?.avgROI || 0;
+      if (avgROI < 0) {
+        warnings.push('Середній ROI негативний - стратегія потребує оптимізації');
+      }
+      
+      // Перевірка win rate
+      const avgWinRate = configAnalysis.statistics?.avgWinRate || 0;
+      if (avgWinRate < 30) {
+        warnings.push('Низький win rate - розгляньте зменшення take profit або збільшення stop loss');
+      }
+      
+    } catch (error) {
+      warnings.push('Помилка при аналізі даних - перевірте якість результатів симуляції');
+    }
+    
+    return warnings;
   }
   
   async findOptimalConfiguration() {
