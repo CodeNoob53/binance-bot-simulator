@@ -21,7 +21,7 @@ export class TradingSimulator {
     this.currentBalance = parseFloat(process.env.INITIAL_BALANCE_USDT) || 10000;
     this.initialBalance = this.currentBalance;
     this.cooldownMap = new Map();
-    
+
     // Ініціалізація стратегій
     this.strategy = new NewListingScalperStrategy(config);
     this.trailingStopLoss = new TrailingStopLoss(config);
@@ -51,6 +51,12 @@ export class TradingSimulator {
     this.startTime = Date.now();
     this.processedListings = 0;
     this.skippedListings = 0;
+    this.skipReasonCounts = {};
+  }
+
+  incrementSkipReason(reason) {
+    if (!reason) return;
+    this.skipReasonCounts[reason] = (this.skipReasonCounts[reason] || 0) + 1;
   }
 
   /**
@@ -96,10 +102,11 @@ export class TradingSimulator {
       
       // Закриття активних угод
       await this.closeAllActiveTrades('simulation_ended', configId);
-      
+
       // Генерація результатів
       const results = await this.generateResults(configId);
-      
+      logger.info(`Skipped listings: ${this.skippedListings}`);
+      logger.debug(`Skip reasons: ${JSON.stringify(this.skipReasonCounts)}`);
       logger.info('Simulation completed successfully');
       return results;
       
@@ -167,9 +174,11 @@ async saveConfiguration() {
     try {
       // Отримання історичних даних
       const marketData = await this.getMarketDataForListing(symbol_id, symbol, listing_date);
-      
+
       if (!marketData) {
         this.skippedListings++;
+        this.incrementSkipReason('no_market_data');
+        logger.debug(`Skipping ${symbol}: no_market_data`);
         return { processed: false, reason: 'no_market_data' };
       }
       
@@ -178,6 +187,7 @@ async saveConfiguration() {
       if (!validation.isValid) {
         logger.debug(`Invalid market data for ${symbol}: ${validation.errors.join(', ')}`);
         this.skippedListings++;
+        this.incrementSkipReason('invalid_data');
         return { processed: false, reason: 'invalid_data', errors: validation.errors };
       }
       
@@ -186,12 +196,16 @@ async saveConfiguration() {
       
       if (!entryConditions.shouldEnter) {
         this.skippedListings++;
+        this.incrementSkipReason(entryConditions.reason);
+        logger.debug(`Entry conditions not met for ${symbol}: ${entryConditions.reason}`);
         return { processed: false, reason: entryConditions.reason };
       }
       
       // Перевірка балансу
       if (this.currentBalance < this.config.buyAmountUsdt) {
         this.skippedListings++;
+        this.incrementSkipReason('insufficient_balance');
+        logger.debug(`Skipping ${symbol}: insufficient_balance`);
         return { processed: false, reason: 'insufficient_balance' };
       }
       
@@ -204,6 +218,7 @@ async saveConfiguration() {
     } catch (error) {
       logger.error(`Error processing listing ${symbol}: ${error.message}`);
       this.skippedListings++;
+      this.incrementSkipReason('error');
       return { processed: false, reason: 'error', error: error.message };
     }
   }
