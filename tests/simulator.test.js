@@ -38,8 +38,8 @@ export async function testFetchKlinesDoesNotThrow() {
 
   const sim = new TradingSimulator({
     name: 'Test',
-    takeProfitPercent: 2,
-    stopLossPercent: 1,
+    takeProfitPercent: 0.02,
+    stopLossPercent: 0.01,
     buyAmountUsdt: 10,
     maxOpenTrades: 1,
     trailingStopEnabled: false
@@ -63,8 +63,8 @@ export async function testSaveSimulationSummaryInsertsRow() {
 
   const sim = new TradingSimulator({
     name: 'Test',
-    takeProfitPercent: 2,
-    stopLossPercent: 1,
+    takeProfitPercent: 0.02,
+    stopLossPercent: 0.01,
     buyAmountUsdt: 10,
     maxOpenTrades: 1,
     trailingStopEnabled: false
@@ -104,8 +104,8 @@ export async function testTrailingStopSavesResult() {
 
   const sim = new TradingSimulator({
     name: 'TrailingTest',
-    takeProfitPercent: 30,
-    stopLossPercent: 5,
+    takeProfitPercent: 0.30,
+    stopLossPercent: 0.05,
     buyAmountUsdt: 10,
     maxOpenTrades: 1,
     trailingStopEnabled: true,
