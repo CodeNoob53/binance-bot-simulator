@@ -54,6 +54,16 @@ export class SymbolModel {
     );
     return result.changes > 0;
   }
+
+  async getSymbolsWithData() {
+    const db = await this.dbPromise;
+    return db.all(`
+      SELECT DISTINCT s.symbol
+      FROM symbols s
+      JOIN historical_klines hk ON s.id = hk.symbol_id
+      ORDER BY s.symbol
+    `);
+  }
 }
 
 export class ListingAnalysisModel {
