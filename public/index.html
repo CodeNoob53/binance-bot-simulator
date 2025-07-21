@@ -5,27 +5,37 @@
   <title>Binance Bot Simulator</title>
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
   <style>
-    body { font-family: Arial, sans-serif; margin: 20px; }
+    body { font-family: Arial, sans-serif; margin: 20px; display: flex; }
+    #sidebar { width: 200px; margin-right: 20px; }
+    #symbolList { list-style: none; padding: 0; }
+    #symbolList li { cursor: pointer; padding: 4px 0; }
+    #symbolList li:hover { text-decoration: underline; }
+    #main { flex: 1; }
     canvas { max-width: 100%; height: 400px; }
+    #info { margin-top: 10px; }
   </style>
 </head>
 <body>
-  <h1>Historical Prices</h1>
-  <select id="symbolSelect">
-    <option value="">Select symbol</option>
-  </select>
-  <canvas id="chart"></canvas>
+  <div id="sidebar">
+    <h3>Symbols</h3>
+    <ul id="symbolList"></ul>
+  </div>
+  <div id="main">
+    <h1>Historical Prices</h1>
+    <canvas id="chart"></canvas>
+    <div id="info"></div>
+  </div>
 
   <script>
     async function loadSymbols() {
       const res = await fetch('/api/symbols');
       const symbols = await res.json();
-      const select = document.getElementById('symbolSelect');
+      const list = document.getElementById('symbolList');
       symbols.forEach(sym => {
-        const opt = document.createElement('option');
-        opt.value = sym;
-        opt.textContent = sym;
-        select.appendChild(opt);
+        const li = document.createElement('li');
+        li.textContent = sym;
+        li.dataset.symbol = sym;
+        list.appendChild(li);
       });
     }
 
@@ -34,11 +44,14 @@
       return res.json();
     }
 
+    async function loadInfo(symbol) {
+      const res = await fetch(`/api/info?symbol=${symbol}`);
+      return res.json();
+    }
+
     let chart;
-    document.getElementById('symbolSelect').addEventListener('change', async e => {
-      const symbol = e.target.value;
-      if (!symbol) return;
-      const klines = await loadKlines(symbol);
+    async function showSymbol(symbol) {
+      const [klines, info] = await Promise.all([loadKlines(symbol), loadInfo(symbol)]);
       const labels = klines.map(k => new Date(k.open_time).toLocaleString());
       const data = klines.map(k => k.close_price);
 
@@ -57,6 +70,20 @@
           }]
         }
       });
+
+      const infoDiv = document.getElementById('info');
+      infoDiv.innerHTML = `
+        <p><strong>Listing:</strong> ${info.listing_date ? new Date(info.listing_date).toLocaleDateString() : 'N/A'}</p>
+        <p><strong>Start price:</strong> ${info.start_price ?? 'N/A'}</p>
+        <p><strong>Last price:</strong> ${info.last_price ?? 'N/A'}</p>
+        <p><strong>Change:</strong> ${info.change_percent ? info.change_percent.toFixed(2) : 'N/A'}%</p>
+        <p><strong>Volatility:</strong> ${info.volatility ? info.volatility.toFixed(2) : 'N/A'}%</p>
+      `;
+    }
+
+    document.getElementById('symbolList').addEventListener('click', e => {
+      if (e.target.tagName !== 'LI') return;
+      showSymbol(e.target.dataset.symbol);
     });
 
     loadSymbols();
