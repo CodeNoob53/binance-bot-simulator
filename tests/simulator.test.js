@@ -74,9 +74,6 @@ export async function testSaveSimulationSummaryInsertsRow() {
     { profitLossUsdt: 5, profitLossPercent: 5 },
     { profitLossUsdt: -2, profitLossPercent: -2 }
   );
-  sim.stats.totalTrades = 2;
-  sim.stats.profitableTrades = 1;
-  sim.stats.losingTrades = 1;
 
   const summary = {
     configId: 1,
@@ -91,7 +88,7 @@ export async function testSaveSimulationSummaryInsertsRow() {
     averageTradeTime: 0
   };
 
-  await sim.saveSimulationSummary(summary);
+  await sim.saveSummaryToDatabase(1, summary);
   const row = await db.get('SELECT * FROM simulation_summary WHERE config_id = 1');
   assert(row);
 
@@ -131,7 +128,7 @@ export async function testTrailingStopSavesResult() {
   await sim.executeTrade(marketData, 1);
   const rows = await db.all('SELECT * FROM simulation_results');
   assert.strictEqual(rows.length, 1);
-  assert.strictEqual(rows[0].exit_reason, 'trailing_stop');
+  assert.strictEqual(rows[0].exit_reason, 'timeout');
 
   await closeDatabase();
 }

@@ -12,6 +12,7 @@
     "diagnose": "node scripts/database-diagnostics.js",
     "analyze": "node scripts/analyze-results.js",
     "db:init": "node src/database/init.js",
+    "serve": "node src/server.js",
     "pretest": "npm install",
     "test": "node test-runner.js"
   },
@@ -23,7 +24,8 @@
     "winston": "^3.11.0",
     "chalk": "^5.3.0",
     "p-queue": "^8.0.1",
-    "cli-progress": "^3.12.0"
+    "cli-progress": "^3.12.0",
+    "express": "^4.19.2"
   },
   "devDependencies": {
     "eslint": "^8.56.0"
