@@ -2,6 +2,7 @@ import express from 'express';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import { getDatabase } from './database/init.js';
+import { symbolModel } from './database/models.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -13,13 +14,7 @@ app.use(express.static(join(__dirname, '../public')));
 
 app.get('/api/symbols', async (req, res) => {
   try {
-    const db = await getDatabase();
-    const rows = await db.all(
-      `SELECT DISTINCT s.symbol
-       FROM symbols s
-       JOIN historical_klines hk ON hk.symbol_id = s.id
-       ORDER BY s.symbol`
-    );
+    const rows = await symbolModel.getSymbolsWithData();
     res.json(rows.map(r => r.symbol));
   } catch (err) {
     console.error(err);
@@ -32,7 +27,7 @@ app.get('/api/klines', async (req, res) => {
   if (!symbol) return res.status(400).json({ error: 'Missing symbol' });
   try {
     const db = await getDatabase();
-    const row = await db.get('SELECT id FROM symbols WHERE symbol = ?', symbol);
+    const row = await symbolModel.findBySymbol(symbol);
     if (!row) return res.status(404).json({ error: 'Symbol not found' });
 
     const klines = await db.all(
