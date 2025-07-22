@@ -4,6 +4,7 @@ import { dirname, join } from 'path';
 import { getDatabase } from './database/init.js';
 import { symbolModel, listingAnalysisModel, historicalKlineModel } from './database/models.js';
 import { calculateVolatility } from './utils/calculations.js';
+import logger from './utils/logger.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -11,80 +12,225 @@ const __dirname = dirname(__filename);
 const app = express();
 const port = process.env.PORT || 3000;
 
+// Middleware
+app.use(express.json());
 app.use(express.static(join(__dirname, '../public')));
 
+// CORS headers
+app.use((req, res, next) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization');
+  next();
+});
+
+// API Routes
 app.get('/api/symbols', async (req, res) => {
   try {
+    logger.info('Fetching symbols with data');
     const rows = await symbolModel.getSymbolsWithData();
-    res.json(rows.map(r => r.symbol));
+    const symbols = rows.map(r => r.symbol).sort();
+    logger.info(`Found ${symbols.length} symbols with historical data`);
+    res.json(symbols);
   } catch (err) {
-    console.error(err);
+    logger.error('Error fetching symbols:', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
 
 app.get('/api/klines', async (req, res) => {
   const { symbol } = req.query;
-  if (!symbol) return res.status(400).json({ error: 'Missing symbol' });
+  if (!symbol) {
+    return res.status(400).json({ error: 'Missing symbol parameter' });
+  }
+  
   try {
+    logger.info(`Fetching klines for ${symbol}`);
     const db = await getDatabase();
     const row = await symbolModel.findBySymbol(symbol);
-    if (!row) return res.status(404).json({ error: 'Symbol not found' });
+    
+    if (!row) {
+      logger.warn(`Symbol ${symbol} not found in database`);
+      return res.status(404).json({ error: 'Symbol not found' });
+    }
 
+    // Отримуємо останні 200 свічок для кращого відображення
     const klines = await db.all(
       `SELECT open_time, open_price, high_price, low_price, close_price, volume
        FROM historical_klines
        WHERE symbol_id = ?
        ORDER BY open_time DESC
-       LIMIT 100`,
+       LIMIT 200`,
       row.id
     );
 
-    res.json(klines.reverse());
+    const formattedKlines = klines.reverse().map(k => ({
+      open_time: k.open_time,
+      open_price: parseFloat(k.open_price),
+      high_price: parseFloat(k.high_price),
+      low_price: parseFloat(k.low_price),
+      close_price: parseFloat(k.close_price),
+      volume: parseFloat(k.volume)
+    }));
+
+    logger.info(`Returning ${formattedKlines.length} klines for ${symbol}`);
+    res.json(formattedKlines);
   } catch (err) {
-    console.error(err);
+    logger.error(`Error fetching klines for ${symbol}:`, err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
 
 app.get('/api/info', async (req, res) => {
   const { symbol } = req.query;
-  if (!symbol) return res.status(400).json({ error: 'Missing symbol' });
+  if (!symbol) {
+    return res.status(400).json({ error: 'Missing symbol parameter' });
+  }
+  
   try {
+    logger.info(`Fetching info for ${symbol}`);
     const db = await getDatabase();
     const row = await symbolModel.findBySymbol(symbol);
-    if (!row) return res.status(404).json({ error: 'Symbol not found' });
+    
+    if (!row) {
+      logger.warn(`Symbol ${symbol} not found in database`);
+      return res.status(404).json({ error: 'Symbol not found' });
+    }
 
     const listing = await listingAnalysisModel.findBySymbolId(row.id);
     const first = await historicalKlineModel.getFirstKline(row.id);
+    
     const last = await db.get(
       `SELECT close_price FROM historical_klines WHERE symbol_id = ? ORDER BY open_time DESC LIMIT 1`,
       row.id
     );
+    
+    // Отримуємо більше даних для кращого розрахунку волатільності
     const last100 = await db.all(
-      `SELECT close_price FROM historical_klines WHERE symbol_id = ? ORDER BY open_time DESC LIMIT 100`,
+      `SELECT close_price FROM historical_klines WHERE symbol_id = ? ORDER BY open_time DESC LIMIT 200`,
       row.id
     );
 
     const startPrice = first ? first.open_price : null;
     const lastPrice = last ? last.close_price : null;
     const changePercent = startPrice && lastPrice ? ((lastPrice - startPrice) / startPrice) * 100 : null;
-    const volatility = last100.length > 1 ? calculateVolatility(last100.map(k => ({ close: k.close_price }))) : null;
+    const volatility = last100.length > 10 ? calculateVolatility(last100.map(k => ({ close: k.close_price }))) : null;
 
-    res.json({
+    // Додаткова статистика
+    const klineCount = await historicalKlineModel.getKlineCount(row.id);
+    const dateRange = first && last ? {
+      start: new Date(first.open_time).toISOString(),
+      end: new Date(last.close_time || Date.now()).toISOString()
+    } : null;
+
+    const info = {
       symbol: row.symbol,
       listing_date: listing ? listing.listing_date : null,
       start_price: startPrice,
       last_price: lastPrice,
       change_percent: changePercent,
-      volatility
-    });
+      volatility,
+      kline_count: klineCount,
+      date_range: dateRange,
+      base_asset: row.base_asset,
+      quote_asset: row.quote_asset,
+      status: row.status
+    };
+
+    logger.info(`Returning info for ${symbol}: ${klineCount} klines, volatility: ${volatility?.toFixed(2)}%`);
+    res.json(info);
   } catch (err) {
-    console.error(err);
+    logger.error(`Error fetching info for ${symbol}:`, err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
 
+// Новий API endpoint для симуляції
+app.post('/api/simulate', async (req, res) => {
+  const { symbol, parameters } = req.body;
+  
+  if (!symbol || !parameters) {
+    return res.status(400).json({ error: 'Missing symbol or parameters' });
+  }
+  
+  try {
+    logger.info(`Starting simulation for ${symbol} with parameters:`, parameters);
+    
+    // Тут можна додати реальну логіку симуляції
+    // Поки що повертаємо mock дані
+    const simulationResult = {
+      symbol,
+      parameters,
+      results: {
+        total_trades: Math.floor(Math.random() * 50) + 10,
+        profitable_trades: Math.floor(Math.random() * 30) + 5,
+        total_return: (Math.random() * 500 - 100).toFixed(2),
+        win_rate: (Math.random() * 40 + 40).toFixed(1),
+        max_drawdown: (Math.random() * 20 + 5).toFixed(1),
+        sharpe_ratio: (Math.random() * 2 + 0.5).toFixed(2),
+        simulation_date: new Date().toISOString()
+      }
+    };
+    
+    logger.info(`Simulation completed for ${symbol}`);
+    res.json(simulationResult);
+    
+  } catch (err) {
+    logger.error(`Error running simulation for ${symbol}:`, err);
+    res.status(500).json({ error: 'Simulation failed' });
+  }
+});
+
+// Статистика системи
+app.get('/api/stats', async (req, res) => {
+  try {
+    const db = await getDatabase();
+    
+    const stats = {
+      total_symbols: (await db.get('SELECT COUNT(*) as count FROM symbols')).count,
+      symbols_with_data: (await db.get(`
+        SELECT COUNT(DISTINCT symbol_id) as count 
+        FROM historical_klines
+      `)).count,
+      total_klines: (await db.get('SELECT COUNT(*) as count FROM historical_klines')).count,
+      analyzed_listings: (await db.get(`
+        SELECT COUNT(*) as count 
+        FROM listing_analysis 
+        WHERE data_status = 'analyzed'
+      `)).count,
+      date_range: await db.get(`
+        SELECT 
+          MIN(datetime(open_time/1000, 'unixepoch')) as earliest,
+          MAX(datetime(close_time/1000, 'unixepoch')) as latest
+        FROM historical_klines
+      `)
+    };
+    
+    res.json(stats);
+  } catch (err) {
+    logger.error('Error fetching system stats:', err);
+    res.status(500).json({ error: 'Failed to fetch stats' });
+  }
+});
+
+// Health check endpoint
+app.get('/api/health', (req, res) => {
+  res.json({ 
+    status: 'healthy', 
+    timestamp: new Date().toISOString(),
+    uptime: process.uptime()
+  });
+});
+
+// Error handling middleware
+app.use((err, req, res, next) => {
+  logger.error('Unhandled error:', err);
+  res.status(500).json({ error: 'Internal server error' });
+});
+
+// Start server
 app.listen(port, () => {
-  console.log(`Server listening on port ${port}`);
+  logger.info(`🚀 Binance Bot Simulator server started on port ${port}`);
+  logger.info(`📊 Web interface: http://localhost:${port}`);
+  logger.info(`🔗 API endpoints: http://localhost:${port}/api/`);
 });

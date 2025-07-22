@@ -64,15 +64,15 @@ export class ListingAnalyzer {
   }
   
   async determineListingDate(symbol) {
-    logger.debug(`Analyzing listing date for ${symbol.symbol}`);
+    logger.debug(`Determining precise listing date for ${symbol.symbol}`);
     
-    // Отримуємо денні свічки за останній рік
-    const oneYearAgo = Date.now() - (365 * 24 * 60 * 60 * 1000);
+    // Спочатку отримуємо денні свічки за останні 2 роки для широкого пошуку
+    const twoYearsAgo = Date.now() - (2 * 365 * 24 * 60 * 60 * 1000);
     
     const dailyKlines = await this.binanceClient.getKlines(
       symbol.symbol,
       '1d',
-      oneYearAgo,
+      twoYearsAgo,
       Date.now(),
       1000
     );
@@ -82,11 +82,56 @@ export class ListingAnalyzer {
       return null;
     }
     
-    // Перша свічка = дата лістингу
-    const listingTimestamp = dailyKlines[0][0];
-    const listingDate = new Date(listingTimestamp);
+    // Знаходимо першу свічку з значним об'ємом (це більш точна дата лістингу)
+    let listingTimestamp = null;
+    let firstSignificantVolume = null;
     
-    logger.info(`${symbol.symbol} listed on ${listingDate.toISOString()}`);
+    for (const kline of dailyKlines) {
+      const [openTime, open, high, low, close, volume] = kline;
+      const volumeNum = parseFloat(volume);
+      
+      // Перша свічка з об'ємом > 0 та ціною > 0
+      if (volumeNum > 0 && parseFloat(open) > 0) {
+        listingTimestamp = openTime;
+        firstSignificantVolume = volumeNum;
+        break;
+      }
+    }
+    
+    if (!listingTimestamp) {
+      logger.warn(`No significant volume found for ${symbol.symbol}`);
+      return dailyKlines[0][0]; // Fallback до першої свічки
+    }
+    
+    // Додаткова перевірка: отримуємо годинні свічки навколо цієї дати для більшої точності
+    const hourlyStartTime = listingTimestamp - (24 * 60 * 60 * 1000); // 24 години до
+    const hourlyEndTime = listingTimestamp + (48 * 60 * 60 * 1000);   // 48 годин після
+    
+    try {
+      const hourlyKlines = await this.binanceClient.getKlines(
+        symbol.symbol,
+        '1h',
+        hourlyStartTime,
+        hourlyEndTime,
+        100
+      );
+      
+      if (hourlyKlines && hourlyKlines.length > 0) {
+        // Знаходимо першу годинну свічку з торгівлею
+        for (const kline of hourlyKlines) {
+          const [openTime, open, high, low, close, volume] = kline;
+          if (parseFloat(volume) > 0 && parseFloat(open) > 0) {
+            listingTimestamp = openTime;
+            break;
+          }
+        }
+      }
+    } catch (error) {
+      logger.debug(`Could not get hourly data for ${symbol.symbol}: ${error.message}`);
+    }
+    
+    const listingDate = new Date(listingTimestamp);
+    logger.info(`${symbol.symbol} precise listing: ${listingDate.toISOString()} (volume: ${firstSignificantVolume})`);
     
     return listingTimestamp;
   }
