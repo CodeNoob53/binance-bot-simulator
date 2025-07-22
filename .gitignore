@@ -50,7 +50,6 @@ tmp/
 *.swp
 yarn.lock
 package-lock.json
-data/simulation.db
 .gitignore
-data
+
 
