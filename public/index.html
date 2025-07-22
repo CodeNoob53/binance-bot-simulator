@@ -703,21 +703,22 @@
       }
 
       async simulateTrading(params) {
-        // Імітація симуляції торгівлі
-        return new Promise((resolve) => {
-          setTimeout(() => {
-            const results = {
-              totalTrades: Math.floor(Math.random() * 20) + 5,
-              profitableTrades: Math.floor(Math.random() * 15) + 3,
-              totalReturn: (Math.random() * 200 - 50).toFixed(2),
-              winRate: (Math.random() * 40 + 40).toFixed(1),
-              maxDrawdown: (Math.random() * 15 + 5).toFixed(1)
-            };
-
-            this.displaySimulationResults(results);
-            resolve(results);
-          }, 2000);
+        const response = await fetch('/api/simulate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            symbol: params.symbol,
+            parameters: params
+          })
         });
+
+        if (!response.ok) {
+          throw new Error('Помилка симуляції');
+        }
+
+        const results = await response.json();
+        this.displaySimulationResults(results);
+        return results;
       }
 
       displaySimulationResults(results) {
@@ -728,25 +729,25 @@
           <div class="info-grid">
             <div class="info-card">
               <h4><i class="fas fa-exchange-alt"></i> Всього угод</h4>
-              <div class="value">${results.totalTrades}</div>
+              <div class="value">${results.total_trades}</div>
             </div>
             <div class="info-card">
               <h4><i class="fas fa-trophy"></i> Прибуткові угоди</h4>
-              <div class="value">${results.profitableTrades}</div>
+              <div class="value">${results.profitable_trades}</div>
             </div>
             <div class="info-card">
               <h4><i class="fas fa-percentage"></i> Win Rate</h4>
-              <div class="value">${results.winRate}%</div>
+              <div class="value">${results.win_rate}%</div>
             </div>
             <div class="info-card">
               <h4><i class="fas fa-dollar-sign"></i> Загальний прибуток</h4>
-              <div class="value ${parseFloat(results.totalReturn) >= 0 ? 'positive' : 'negative'}">
-                ${results.totalReturn} USDT
+              <div class="value ${parseFloat(results.total_return) >= 0 ? 'positive' : 'negative'}">
+                ${results.total_return} USDT
               </div>
             </div>
             <div class="info-card">
               <h4><i class="fas fa-chart-line-down"></i> Макс. просадка</h4>
-              <div class="value">${results.maxDrawdown}%</div>
+              <div class="value">${results.max_drawdown}%</div>
             </div>
           </div>
         `;
