@@ -354,3 +354,90 @@ export function validateOptimizationParams(params) {
     errors
   };
 }
+
+/**
+ * Валідація змінних середовища
+ */
+export function validateEnvironmentVariables(env) {
+  const errors = [];
+  const warnings = [];
+  
+  if (!env || typeof env !== 'object') {
+    errors.push('Environment object is required');
+    return { isValid: false, errors, warnings };
+  }
+  
+  // Критичні змінні середовища
+  const requiredVars = [
+    'BOT_ENV',
+    'DB_PATH',
+    'INITIAL_BALANCE_USDT',
+    'BINANCE_API_BASE_URL'
+  ];
+  
+  for (const varName of requiredVars) {
+    if (!env[varName]) {
+      errors.push(`${varName} environment variable is required`);
+    }
+  }
+  
+  // Валідація BOT_ENV
+  if (env.BOT_ENV) {
+    const validEnvs = ['development', 'production', 'test'];
+    if (!validEnvs.includes(env.BOT_ENV)) {
+      warnings.push(`BOT_ENV should be one of: ${validEnvs.join(', ')}`);
+    }
+  }
+  
+  // Валідація INITIAL_BALANCE_USDT
+  if (env.INITIAL_BALANCE_USDT) {
+    const balance = parseFloat(env.INITIAL_BALANCE_USDT);
+    if (isNaN(balance) || balance <= 0) {
+      errors.push('INITIAL_BALANCE_USDT must be a positive number');
+    } else if (balance < 10) {
+      warnings.push('INITIAL_BALANCE_USDT is very low (< $10)');
+    }
+  }
+  
+  // Валідація DB_PATH
+  if (env.DB_PATH && !env.DB_PATH.endsWith('.db')) {
+    warnings.push('DB_PATH should end with .db extension');
+  }
+  
+  // Валідація BINANCE_API_BASE_URL
+  if (env.BINANCE_API_BASE_URL) {
+    try {
+      new URL(env.BINANCE_API_BASE_URL);
+    } catch (error) {
+      errors.push('BINANCE_API_BASE_URL must be a valid URL');
+    }
+  }
+  
+  // Опціональні змінні з попередженнями
+  const optionalVars = {
+    'LOG_LEVEL': ['error', 'warn', 'info', 'debug'],
+    'MAX_CONCURRENT_REQUESTS': null,
+    'REQUEST_TIMEOUT_MS': null
+  };
+  
+  for (const [varName, validValues] of Object.entries(optionalVars)) {
+    if (env[varName]) {
+      if (validValues && !validValues.includes(env[varName])) {
+        warnings.push(`${varName} should be one of: ${validValues.join(', ')}`);
+      }
+      
+      if (varName === 'MAX_CONCURRENT_REQUESTS' || varName === 'REQUEST_TIMEOUT_MS') {
+        const value = parseInt(env[varName]);
+        if (isNaN(value) || value <= 0) {
+          warnings.push(`${varName} should be a positive integer`);
+        }
+      }
+    }
+  }
+  
+  return {
+    isValid: errors.length === 0,
+    errors,
+    warnings
+  };
+}
