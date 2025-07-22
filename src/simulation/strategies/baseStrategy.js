@@ -1,4 +1,5 @@
 import logger from '../../utils/logger.js';
+import { calculateCommission, calculateProfitLoss } from '../../utils/calculations.js';
 
 export class BaseStrategy {
   constructor(config) {
@@ -31,7 +32,7 @@ export class BaseStrategy {
     const quantity = this.config.buyAmountUsdt / entryPrice;
     
     // Базовий розрахунок TP/SL з урахуванням комісій
-    const feeAdjustment = 2 * this.config.binanceFeePercent;
+    const feeAdjustment = 2 * (this.config.binanceFeePercent / 100);
     const tpPrice = entryPrice * (1 + this.config.takeProfitPercent + feeAdjustment);
     const slPrice = entryPrice * (1 - this.config.stopLossPercent - feeAdjustment);
     
@@ -152,11 +153,28 @@ export class BaseStrategy {
     trade.exitReason = reason;
     trade.status = 'closed';
     
-    // Розрахунок результату
-    const totalCost = trade.entryPrice * trade.quantity * (1 + this.config.binanceFeePercent);
-    const totalReceived = exitPrice * trade.quantity * (1 - this.config.binanceFeePercent);
-    trade.profitLossUsdt = totalReceived - totalCost;
-    trade.profitLossPercent = (trade.profitLossUsdt / totalCost) * 100;
+    // Розрахунок комісій та прибутку
+    const entryCommission = calculateCommission(
+      trade.entryPrice * trade.quantity,
+      this.config.binanceFeePercent
+    );
+    const exitCommission = calculateCommission(
+      exitPrice * trade.quantity,
+      this.config.binanceFeePercent
+    );
+
+    const profitLoss = calculateProfitLoss({
+      entryPrice: trade.entryPrice,
+      exitPrice,
+      quantity: trade.quantity,
+      entryCommission,
+      exitCommission
+    });
+
+    trade.profitLossUsdt = profitLoss.usdt;
+    trade.profitLossPercent = profitLoss.percent;
+    trade.entryCommission = entryCommission;
+    trade.exitCommission = exitCommission;
     
     this.activeTrades.delete(trade.id);
     
