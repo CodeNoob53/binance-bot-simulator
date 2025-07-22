@@ -54,3 +54,6 @@ yarn.lock
 package-lock.json
 
 
+data/simulation.db
+data/simulation.db-shm
+data/simulation.db-wal
