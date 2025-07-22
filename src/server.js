@@ -3,6 +3,7 @@ import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import { getDatabase } from './database/init.js';
 import { symbolModel, listingAnalysisModel, historicalKlineModel } from './database/models.js';
+import { TradingSimulator } from './simulation/simulator.js';
 import { calculateVolatility } from './utils/calculations.js';
 import logger from './utils/logger.js';
 
@@ -148,36 +149,56 @@ app.get('/api/info', async (req, res) => {
 // Новий API endpoint для симуляції
 app.post('/api/simulate', async (req, res) => {
   const { symbol, parameters } = req.body;
-  
+
   if (!symbol || !parameters) {
     return res.status(400).json({ error: 'Missing symbol or parameters' });
   }
-  
+
   try {
     logger.info(`Starting simulation for ${symbol} with parameters:`, parameters);
-    
-    // Тут можна додати реальну логіку симуляції
-    // Поки що повертаємо mock дані
-    const simulationResult = {
-      symbol,
-      parameters,
-      results: {
-        total_trades: Math.floor(Math.random() * 50) + 10,
-        profitable_trades: Math.floor(Math.random() * 30) + 5,
-        total_return: (Math.random() * 500 - 100).toFixed(2),
-        win_rate: (Math.random() * 40 + 40).toFixed(1),
-        max_drawdown: (Math.random() * 20 + 5).toFixed(1),
-        sharpe_ratio: (Math.random() * 2 + 0.5).toFixed(2),
-        simulation_date: new Date().toISOString()
-      }
+
+    const symbolRow = await symbolModel.findBySymbol(symbol);
+    if (!symbolRow) {
+      return res.status(404).json({ error: 'Symbol not found' });
+    }
+
+    const listing = await listingAnalysisModel.findBySymbolId(symbolRow.id);
+    if (!listing) {
+      return res.status(404).json({ error: 'Listing info not found' });
+    }
+
+    const start = listing.listing_date;
+    const end = start + 60 * 60 * 1000;
+    const klines = await historicalKlineModel.getBySymbolAndTimeRange(
+      symbolRow.id,
+      start,
+      end
+    );
+
+    if (!klines || klines.length < 3) {
+      return res.status(404).json({ error: 'Not enough market data' });
+    }
+
+    const simulator = new TradingSimulator(parameters);
+    const configId = await simulator.saveConfiguration();
+
+    const listingInfo = {
+      symbol_id: symbolRow.id,
+      symbol: symbolRow.symbol,
+      listing_date: listing.listing_date,
+      klines_count: klines.length
     };
-    
+
+    await simulator.processListing(listingInfo, configId);
+    await simulator.closeAllActiveTrades('api_request', configId);
+    const results = await simulator.generateResults(configId);
+
     logger.info(`Simulation completed for ${symbol}`);
-    res.json(simulationResult);
-    
+    res.json(results.summary);
+
   } catch (err) {
     logger.error(`Error running simulation for ${symbol}:`, err);
-    res.status(500).json({ error: 'Simulation failed' });
+    res.status(500).json({ error: 'Simulation failed', details: err.message });
   }
 });
 
