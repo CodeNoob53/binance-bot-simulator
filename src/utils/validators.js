@@ -292,6 +292,73 @@ export function validateTradeResult(result) {
 }
 
 /**
+ * Валідація торгової угоди
+ */
+export function validateTrade(trade) {
+  const errors = [];
+  
+  if (!trade || typeof trade !== 'object') {
+    errors.push('trade must be an object');
+    return { isValid: false, errors };
+  }
+  
+  // Валідація символу
+  if (!trade.symbol || typeof trade.symbol !== 'string') {
+    errors.push('symbol is required and must be a string');
+  }
+  
+  // Валідація сторони угоди
+  const validSides = ['BUY', 'SELL'];
+  if (!trade.side || !validSides.includes(trade.side)) {
+    errors.push(`side must be one of: ${validSides.join(', ')}`);
+  }
+  
+  // Валідація типу угоди
+  const validTypes = ['MARKET', 'LIMIT', 'STOP_LOSS', 'STOP_LOSS_LIMIT', 'TAKE_PROFIT', 'TAKE_PROFIT_LIMIT'];
+  if (!trade.type || !validTypes.includes(trade.type)) {
+    errors.push(`type must be one of: ${validTypes.join(', ')}`);
+  }
+  
+  // Валідація кількості
+  if (!trade.quantity || typeof trade.quantity !== 'number') {
+    errors.push('quantity is required and must be a number');
+  } else if (trade.quantity <= 0) {
+    errors.push('quantity must be greater than 0');
+  }
+  
+  // Валідація ціни (для лімітних ордерів)
+  if (trade.type && (trade.type.includes('LIMIT') || trade.type.includes('STOP'))) {
+    if (!trade.price || typeof trade.price !== 'number') {
+      errors.push('price is required for limit and stop orders');
+    } else if (trade.price <= 0) {
+      errors.push('price must be greater than 0');
+    }
+  }
+  
+  // Валідація stopPrice (для стоп ордерів)
+  if (trade.type && trade.type.includes('STOP')) {
+    if (!trade.stopPrice || typeof trade.stopPrice !== 'number') {
+      errors.push('stopPrice is required for stop orders');
+    } else if (trade.stopPrice <= 0) {
+      errors.push('stopPrice must be greater than 0');
+    }
+  }
+  
+  // Валідація timeInForce
+  if (trade.timeInForce) {
+    const validTimeInForce = ['GTC', 'IOC', 'FOK'];
+    if (!validTimeInForce.includes(trade.timeInForce)) {
+      errors.push(`timeInForce must be one of: ${validTimeInForce.join(', ')}`);
+    }
+  }
+  
+  return {
+    isValid: errors.length === 0,
+    errors
+  };
+}
+
+/**
  * Валідація параметрів оптимізації
  */
 export function validateOptimizationParams(params) {
@@ -352,5 +419,92 @@ export function validateOptimizationParams(params) {
   return {
     isValid: errors.length === 0,
     errors
+  };
+}
+
+/**
+ * Валідація змінних середовища
+ */
+export function validateEnvironmentVariables(env) {
+  const errors = [];
+  const warnings = [];
+  
+  if (!env || typeof env !== 'object') {
+    errors.push('Environment object is required');
+    return { isValid: false, errors, warnings };
+  }
+  
+  // Критичні змінні середовища
+  const requiredVars = [
+    'BOT_ENV',
+    'DB_PATH',
+    'INITIAL_BALANCE_USDT',
+    'BINANCE_API_BASE_URL'
+  ];
+  
+  for (const varName of requiredVars) {
+    if (!env[varName]) {
+      errors.push(`${varName} environment variable is required`);
+    }
+  }
+  
+  // Валідація BOT_ENV
+  if (env.BOT_ENV) {
+    const validEnvs = ['development', 'production', 'test'];
+    if (!validEnvs.includes(env.BOT_ENV)) {
+      warnings.push(`BOT_ENV should be one of: ${validEnvs.join(', ')}`);
+    }
+  }
+  
+  // Валідація INITIAL_BALANCE_USDT
+  if (env.INITIAL_BALANCE_USDT) {
+    const balance = parseFloat(env.INITIAL_BALANCE_USDT);
+    if (isNaN(balance) || balance <= 0) {
+      errors.push('INITIAL_BALANCE_USDT must be a positive number');
+    } else if (balance < 10) {
+      warnings.push('INITIAL_BALANCE_USDT is very low (< $10)');
+    }
+  }
+  
+  // Валідація DB_PATH
+  if (env.DB_PATH && !env.DB_PATH.endsWith('.db')) {
+    warnings.push('DB_PATH should end with .db extension');
+  }
+  
+  // Валідація BINANCE_API_BASE_URL
+  if (env.BINANCE_API_BASE_URL) {
+    try {
+      new URL(env.BINANCE_API_BASE_URL);
+    } catch (error) {
+      errors.push('BINANCE_API_BASE_URL must be a valid URL');
+    }
+  }
+  
+  // Опціональні змінні з попередженнями
+  const optionalVars = {
+    'LOG_LEVEL': ['error', 'warn', 'info', 'debug'],
+    'MAX_CONCURRENT_REQUESTS': null,
+    'REQUEST_TIMEOUT_MS': null
+  };
+  
+  for (const [varName, validValues] of Object.entries(optionalVars)) {
+    if (env[varName]) {
+      if (validValues && !validValues.includes(env[varName])) {
+        warnings.push(`${varName} should be one of: ${validValues.join(', ')}`);
+      }
+      
+      if (varName === 'MAX_CONCURRENT_REQUESTS' || varName === 'REQUEST_TIMEOUT_MS') {
+        const value = parseInt(env[varName]);
+        if (isNaN(value) || value <= 0) {
+          warnings.push(`${varName} should be a positive integer`);
+        }
+      }
+    }
+  }
+  
+  return {
+    isValid: errors.length === 0,
+    errors,
+    warnings
   };
 }

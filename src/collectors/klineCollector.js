@@ -221,14 +221,25 @@ export class KlineCollector {
   }
   
   calculateCollectionPeriod(listingDate) {
-    // Збираємо дані за 48 годин з моменту лістингу
+    // ВИПРАВЛЕНО: Збираємо точно 48 годин хвилинних даних з моменту лістингу
     const start = listingDate;
-    const end = Math.min(
-      listingDate + (48 * 60 * 60 * 1000), // 48 годин
-      Date.now() // Але не пізніше поточного часу
-    );
+    const end = listingDate + (48 * 60 * 60 * 1000); // Рівно 48 годин
     
-    return { start, end };
+    // Якщо дата лістингу в майбутньому (помилка), використовуємо поточний час
+    if (listingDate > Date.now()) {
+      logger.warn(`Listing date in future, using current time as fallback`);
+      return {
+        start: Date.now() - (48 * 60 * 60 * 1000),
+        end: Date.now()
+      };
+    }
+    
+    // Якщо кінцева дата в майбутньому, обмежуємо поточним часом
+    const actualEnd = Math.min(end, Date.now());
+    
+    logger.debug(`Collection period: ${new Date(start).toISOString()} - ${new Date(actualEnd).toISOString()}`);
+    
+    return { start, end: actualEnd };
   }
   
   async collectWithRetry(symbol, period, workerId, maxRetries = 3) {
