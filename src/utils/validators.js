@@ -292,6 +292,73 @@ export function validateTradeResult(result) {
 }
 
 /**
+ * Валідація торгової угоди
+ */
+export function validateTrade(trade) {
+  const errors = [];
+  
+  if (!trade || typeof trade !== 'object') {
+    errors.push('trade must be an object');
+    return { isValid: false, errors };
+  }
+  
+  // Валідація символу
+  if (!trade.symbol || typeof trade.symbol !== 'string') {
+    errors.push('symbol is required and must be a string');
+  }
+  
+  // Валідація сторони угоди
+  const validSides = ['BUY', 'SELL'];
+  if (!trade.side || !validSides.includes(trade.side)) {
+    errors.push(`side must be one of: ${validSides.join(', ')}`);
+  }
+  
+  // Валідація типу угоди
+  const validTypes = ['MARKET', 'LIMIT', 'STOP_LOSS', 'STOP_LOSS_LIMIT', 'TAKE_PROFIT', 'TAKE_PROFIT_LIMIT'];
+  if (!trade.type || !validTypes.includes(trade.type)) {
+    errors.push(`type must be one of: ${validTypes.join(', ')}`);
+  }
+  
+  // Валідація кількості
+  if (!trade.quantity || typeof trade.quantity !== 'number') {
+    errors.push('quantity is required and must be a number');
+  } else if (trade.quantity <= 0) {
+    errors.push('quantity must be greater than 0');
+  }
+  
+  // Валідація ціни (для лімітних ордерів)
+  if (trade.type && (trade.type.includes('LIMIT') || trade.type.includes('STOP'))) {
+    if (!trade.price || typeof trade.price !== 'number') {
+      errors.push('price is required for limit and stop orders');
+    } else if (trade.price <= 0) {
+      errors.push('price must be greater than 0');
+    }
+  }
+  
+  // Валідація stopPrice (для стоп ордерів)
+  if (trade.type && trade.type.includes('STOP')) {
+    if (!trade.stopPrice || typeof trade.stopPrice !== 'number') {
+      errors.push('stopPrice is required for stop orders');
+    } else if (trade.stopPrice <= 0) {
+      errors.push('stopPrice must be greater than 0');
+    }
+  }
+  
+  // Валідація timeInForce
+  if (trade.timeInForce) {
+    const validTimeInForce = ['GTC', 'IOC', 'FOK'];
+    if (!validTimeInForce.includes(trade.timeInForce)) {
+      errors.push(`timeInForce must be one of: ${validTimeInForce.join(', ')}`);
+    }
+  }
+  
+  return {
+    isValid: errors.length === 0,
+    errors
+  };
+}
+
+/**
  * Валідація параметрів оптимізації
  */
 export function validateOptimizationParams(params) {
