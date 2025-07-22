@@ -211,12 +211,25 @@ class BinanceClient {
         const startTime = Date.now();
         const response = await this.axios.get(endpoint, { params });
         const duration = Date.now() - startTime;
-        
+
+        if (response.status >= 400) {
+          const errorInfo = this.parseApiError({ response });
+          this.logApiError(errorInfo, {
+            endpoint,
+            params: Object.keys(params),
+            attempt,
+            requestId
+          });
+          const err = new Error(`API Error (${errorInfo.code}): ${errorInfo.message}`);
+          err.response = response;
+          throw err;
+        }
+
         logger.debug(`[${requestId}] Success (${duration}ms)`, {
           status: response.status,
           dataSize: Array.isArray(response.data) ? response.data.length : typeof response.data
         });
-        
+
         return response.data;
         
       } catch (error) {
