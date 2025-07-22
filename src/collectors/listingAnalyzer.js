@@ -65,7 +65,21 @@ export class ListingAnalyzer {
   
   async determineListingDate(symbol) {
     logger.debug(`Determining precise listing date for ${symbol.symbol}`);
-    
+
+    // Try to obtain listing info directly from exchange metadata
+    try {
+      const exchangeInfo = await this.binanceClient.getExchangeInfo();
+      if (exchangeInfo && Array.isArray(exchangeInfo.symbols)) {
+        const meta = exchangeInfo.symbols.find(s => s.symbol === symbol.symbol);
+        if (meta && meta.onboardDate && meta.onboardDate !== 0) {
+          logger.info(`${symbol.symbol} onboard date found in exchange info`);
+          return meta.onboardDate;
+        }
+      }
+    } catch (err) {
+      logger.debug(`Could not get exchange info for ${symbol.symbol}: ${err.message}`);
+    }
+
     // Спочатку отримуємо денні свічки за останні 2 роки для широкого пошуку
     const twoYearsAgo = Date.now() - (2 * 365 * 24 * 60 * 60 * 1000);
     
