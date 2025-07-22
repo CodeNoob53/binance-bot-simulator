@@ -355,15 +355,22 @@ class BinanceClient {
           break;
         }
         
-        // Уникаємо дублювання останньої свічки при пагінації
-        const klinesToAdd = klines.length === MAX_KLINES ? 
-          klines.slice(0, -1) : klines;
-        
-        allKlines.push(...klinesToAdd);
-        
-        // Наступний batch
         const lastKline = klines[klines.length - 1];
-        currentStartTime = lastKline[6] + 1; // closeTime + 1ms
+        const nextStartTime = lastKline[6] + 1; // closeTime + 1ms
+
+        // Уникаємо дублювання останньої свічки при пагінації,
+        // але відкидаємо її лише якщо наступний batch дійсно перекривається
+        let klinesToAdd = klines;
+        if (klines.length === MAX_KLINES && nextStartTime <= endTime) {
+          if (nextStartTime <= lastKline[0]) {
+            klinesToAdd = klines.slice(0, -1);
+          }
+        }
+
+        allKlines.push(...klinesToAdd);
+
+        // Наступний batch
+        currentStartTime = nextStartTime;
         
         // Логування прогресу
         if (iterations % 10 === 0) {
