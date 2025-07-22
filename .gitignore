@@ -19,6 +19,8 @@ build/|
 .nuxt/ # For Nuxt.js projects
 out/ # Common for static site generation
 reports # For test reports
+data # For data files
+*.db
 
 # Local environment variables
 .env
@@ -45,7 +47,6 @@ coverage/
 .npm/
 
 # Other temporary files
-data
 tmp/
 *.tmp
 *.swp
