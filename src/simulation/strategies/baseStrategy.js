@@ -153,14 +153,14 @@ export class BaseStrategy {
     trade.exitReason = reason;
     trade.status = 'closed';
     
-    // Розрахунок комісій та прибутку
+    // Розрахунок результату через спільну утиліту
     const entryCommission = calculateCommission(
       trade.entryPrice * trade.quantity,
-      this.config.binanceFeePercent
+      this.config.binanceFeePercent * 100
     );
     const exitCommission = calculateCommission(
       exitPrice * trade.quantity,
-      this.config.binanceFeePercent
+      this.config.binanceFeePercent * 100
     );
 
     const profitLoss = calculateProfitLoss({
@@ -175,6 +175,7 @@ export class BaseStrategy {
     trade.profitLossPercent = profitLoss.percent;
     trade.entryCommission = entryCommission;
     trade.exitCommission = exitCommission;
+
     
     this.activeTrades.delete(trade.id);
     

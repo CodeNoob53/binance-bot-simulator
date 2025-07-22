@@ -194,7 +194,7 @@ export class TradingEngine extends EventEmitter {
           quantity,
           entryTime: Date.now(),
           orderId: order.orderId,
-          commission: entryCommission
+          commission: calculateCommission(this.config.buyAmountUsdt, this.config.binanceFeePercent * 100)
         });
 
         // Додавання в активні угоди
@@ -352,8 +352,8 @@ export class TradingEngine extends EventEmitter {
       if (sellResult.success) {
         // Розрахунок прибутку/збитку
         const exitCommission = calculateCommission(
-          exitPrice * trade.quantity, 
-          this.config.binanceFeePercent
+          exitPrice * trade.quantity,
+          this.config.binanceFeePercent * 100
         );
         
         const profitLoss = calculateProfitLoss({
