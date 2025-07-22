@@ -259,7 +259,17 @@ class BinanceClient {
    * Отримання інформації про біржу
    */
   async getExchangeInfo() {
-    return await this.request('/api/v3/exchangeInfo');
+    const info = await this.request('/api/v3/exchangeInfo');
+
+    // Normalize onboardDate so it is always a number
+    if (info && Array.isArray(info.symbols)) {
+      info.symbols = info.symbols.map(sym => ({
+        ...sym,
+        onboardDate: sym.onboardDate ? Number(sym.onboardDate) : 0
+      }));
+    }
+
+    return info;
   }
   
   /**

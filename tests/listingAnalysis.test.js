@@ -57,3 +57,22 @@ export async function testListingAnalysisModelCreateUpsert() {
   await closeDatabase();
 }
 
+export async function testDetermineListingDateUsesOnboardDate() {
+  const analyzer = new ListingAnalyzer();
+  let klinesCalled = false;
+
+  analyzer.binanceClient = {
+    async getExchangeInfo() {
+      return { symbols: [{ symbol: 'AAAUSDT', onboardDate: 987654321 }] };
+    },
+    async getKlines() {
+      klinesCalled = true;
+      return [];
+    }
+  };
+
+  const ts = await analyzer.determineListingDate({ symbol: 'AAAUSDT' });
+  assert.strictEqual(ts, 987654321);
+  assert.strictEqual(klinesCalled, false);
+}
+
