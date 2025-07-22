@@ -183,20 +183,25 @@ export class TradingEngine extends EventEmitter {
 
       if (order.success) {
         // Створення торгової позиції
+        const entryCommission = calculateCommission(
+          this.config.buyAmountUsdt,
+          this.config.binanceFeePercent
+        );
+
         const trade = this.createTrade({
           symbol,
           entryPrice: currentPrice,
           quantity,
           entryTime: Date.now(),
           orderId: order.orderId,
-          commission: calculateCommission(this.config.buyAmountUsdt, this.config.binanceFeePercent)
+          commission: entryCommission
         });
 
         // Додавання в активні угоди
         this.activeTrades.set(symbol, trade);
         
-        // Оновлення балансу
-        this.updateBalance(-this.config.buyAmountUsdt);
+        // Оновлення балансу (вартість покупки + комісія)
+        this.updateBalance(-(this.config.buyAmountUsdt + entryCommission));
         
         this.emit('trade_opened', trade);
         
