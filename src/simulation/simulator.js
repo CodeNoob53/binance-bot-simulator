@@ -3,6 +3,7 @@ import { SimulationConfigModel, SimulationResultModel, SimulationSummaryModel } 
 import { NewListingScalperStrategy } from './strategies/newListingScalper.js';
 import { validateMarketData } from '../utils/validators.js';
 import logger from '../utils/logger.js';
+import { calculateProfitLoss, calculateCommission } from '../utils/calculations.js';
 
 export class TradingSimulator {
   constructor(config) {
@@ -447,16 +448,26 @@ export class TradingSimulator {
       // Симуляція виходу
       const simulatedExit = this.simulateTradeExit(marketData, entryPrice, takeProfitPrice, stopLossPrice);
       
-      // ВИПРАВЛЕНО: Розрахунок результату БЕЗ штрафу за timeout
-      const buyCommission = this.config.buyAmountUsdt * this.config.binanceFeePercent;
-      const sellAmount = quantity * simulatedExit.exitPrice;
-      const sellCommission = sellAmount * this.config.binanceFeePercent;
-      const netReceived = sellAmount - sellCommission;
-      const totalCost = this.config.buyAmountUsdt + buyCommission;
-      
-      // ГОЛОВНЕ ВИПРАВЛЕННЯ: реальний розрахунок прибутку
-      const profitLossUsdt = netReceived - totalCost;
-      const profitLossPercent = (profitLossUsdt / totalCost) * 100;
+      // Розрахунок комісій та прибутку через спільну утиліту
+      const buyCommission = calculateCommission(
+        this.config.buyAmountUsdt,
+        this.config.binanceFeePercent * 100
+      );
+      const sellCommission = calculateCommission(
+        quantity * simulatedExit.exitPrice,
+        this.config.binanceFeePercent * 100
+      );
+      const entryCommission = buyCommission;
+      const exitCommission = sellCommission;
+      const profitLoss = calculateProfitLoss({
+        entryPrice,
+        exitPrice: simulatedExit.exitPrice,
+        quantity,
+        entryCommission,
+        exitCommission
+      });
+      const profitLossUsdt = profitLoss.usdt;
+      const profitLossPercent = profitLoss.percent;
       
       // ДОДАТКОВО: логування для діагностики
       if (simulatedExit.reason === 'timeout') {

@@ -1,4 +1,5 @@
 import logger from '../../utils/logger.js';
+import { calculateProfitLoss, calculateCommission } from '../../utils/calculations.js';
 
 export class BaseStrategy {
   constructor(config) {
@@ -152,11 +153,24 @@ export class BaseStrategy {
     trade.exitReason = reason;
     trade.status = 'closed';
     
-    // Розрахунок результату
-    const totalCost = trade.entryPrice * trade.quantity * (1 + this.config.binanceFeePercent);
-    const totalReceived = exitPrice * trade.quantity * (1 - this.config.binanceFeePercent);
-    trade.profitLossUsdt = totalReceived - totalCost;
-    trade.profitLossPercent = (trade.profitLossUsdt / totalCost) * 100;
+    // Розрахунок результату через спільну утиліту
+    const entryCommission = calculateCommission(
+      trade.entryPrice * trade.quantity,
+      this.config.binanceFeePercent * 100
+    );
+    const exitCommission = calculateCommission(
+      exitPrice * trade.quantity,
+      this.config.binanceFeePercent * 100
+    );
+    const profitLoss = calculateProfitLoss({
+      entryPrice: trade.entryPrice,
+      exitPrice,
+      quantity: trade.quantity,
+      entryCommission,
+      exitCommission
+    });
+    trade.profitLossUsdt = profitLoss.usdt;
+    trade.profitLossPercent = profitLoss.percent;
     
     this.activeTrades.delete(trade.id);
     
