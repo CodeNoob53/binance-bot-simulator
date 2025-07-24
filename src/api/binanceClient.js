@@ -331,7 +331,7 @@ class BinanceClient {
     const allKlines = [];
     let currentStartTime = startTime;
     const MAX_KLINES = 1000;
-    const MAX_ITERATIONS = 100; // Обмеження для запобігання нескінченним циклам
+    const MAX_ITERATIONS = 100;
     let iterations = 0;
     
     logger.info(`Starting historical collection for ${symbol}:`, {
@@ -358,20 +358,40 @@ class BinanceClient {
           break;
         }
         
-        // Уникаємо дублювання останньої свічки при пагінації
-        const klinesToAdd = klines.length === MAX_KLINES ? 
-          klines.slice(0, -1) : klines;
+        // ВИПРАВЛЕННЯ: Правильна обробка пагінації
+        if (klines.length === MAX_KLINES) {
+          // Якщо отримали максимум свічок, видаляємо останню щоб уникнути дублювання
+          const klinesToAdd = klines.slice(0, -1);
+          allKlines.push(...klinesToAdd);
+          
+          // Наступний batch починається з closeTime останньої доданої свічки + 1ms
+          const lastAddedKline = klinesToAdd[klinesToAdd.length - 1];
+          currentStartTime = lastAddedKline[6] + 1; // closeTime + 1ms
+        } else {
+          // Якщо отримали менше максимуму - це останній batch
+          allKlines.push(...klines);
+          break;
+        }
         
-        allKlines.push(...klinesToAdd);
+        // Перевірка чи не вийшли за межі періоду
+        if (currentStartTime >= endTime) {
+          logger.debug(`Reached end time for ${symbol}`);
+          break;
+        }
         
-        // Наступний batch
-        const lastKline = klines[klines.length - 1];
-        currentStartTime = lastKline[6] + 1; // closeTime + 1ms
-        
-        // Логування прогресу
+        // Логування прогресу кожні 10 ітерацій
         if (iterations % 10 === 0) {
           const progress = Math.round((currentStartTime - startTime) / (endTime - startTime) * 100);
           logger.debug(`${symbol} progress: ${progress}% (${allKlines.length} klines)`);
+        }
+        
+        // Додаткова перевірка на зациклення
+        if (allKlines.length > 0) {
+          const lastKlineTime = allKlines[allKlines.length - 1][6];
+          if (currentStartTime <= lastKlineTime) {
+            logger.warn(`Potential infinite loop detected for ${symbol}, breaking`);
+            break;
+          }
         }
         
       } catch (error) {
@@ -388,8 +408,14 @@ class BinanceClient {
           continue;
         }
         
-        // Для інших помилок - виходимо
-        break;
+        // Для інших помилок - виходимо якщо вже маємо дані
+        if (allKlines.length > 0) {
+          logger.warn(`Stopping collection for ${symbol} due to error, but have ${allKlines.length} klines`);
+          break;
+        }
+        
+        // Якщо даних немає - кидаємо помилку
+        throw error;
       }
     }
     
@@ -397,17 +423,28 @@ class BinanceClient {
       logger.warn(`Reached max iterations for ${symbol} (${MAX_ITERATIONS})`);
     }
     
-    const coverage = allKlines.length > 0 && endTime > startTime ?
-      Math.round(((allKlines[allKlines.length-1][6] - allKlines[0][0]) / (endTime - startTime)) * 100) : 0;
-    
-    logger.info(`Completed ${symbol} collection:`, {
-      klines: allKlines.length,
-      iterations,
-      coverage: `${coverage}%`,
-      status: allKlines.length > 0 ? 'success' : 'no_data'
+    // Фільтруємо свічки що виходять за межі періоду
+    const filteredKlines = allKlines.filter(kline => {
+      const openTime = kline[0];
+      const closeTime = kline[6];
+      return openTime >= startTime && closeTime <= endTime;
     });
     
-    return allKlines;
+    const coverage = filteredKlines.length > 0 && endTime > startTime ?
+      Math.round(((filteredKlines[filteredKlines.length-1][6] - filteredKlines[0][0]) / (endTime - startTime)) * 100) : 0;
+    
+    logger.info(`Completed ${symbol} collection:`, {
+      requestedKlines: allKlines.length,
+      filteredKlines: filteredKlines.length,
+      iterations,
+      coverage: `${coverage}%`,
+      actualPeriod: filteredKlines.length > 0 ? {
+        from: new Date(filteredKlines[0][0]).toISOString(),
+        to: new Date(filteredKlines[filteredKlines.length-1][6]).toISOString()
+      } : 'no data'
+    });
+    
+    return filteredKlines;
   }
   
   /**

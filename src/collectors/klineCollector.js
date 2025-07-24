@@ -114,13 +114,14 @@ export class KlineCollector {
         return { symbol, success: true, reason: 'already_exists', klinesCount: 0 };
       }
       
-      // Розрахунок періоду збору (48 годин з моменту лістингу)
+      // ВИПРАВЛЕНО: Використовуємо точну дату лістингу без зміщень
       const collectionPeriod = this.calculateCollectionPeriod(listing_date);
       
       logger.info(`[Worker ${workerId}] Collecting minute klines for ${symbol}`, {
         listingDate: new Date(listing_date).toISOString(),
         startTime: new Date(collectionPeriod.start).toISOString(),
         endTime: new Date(collectionPeriod.end).toISOString(),
+        expectedKlines: Math.round((collectionPeriod.end - collectionPeriod.start) / (60 * 1000)), // хвилинні свічки
         durationHours: Math.round((collectionPeriod.end - collectionPeriod.start) / (1000 * 60 * 60))
       });
       
@@ -133,6 +134,14 @@ export class KlineCollector {
         return { symbol, success: false, reason: 'no_data' };
       }
       
+      // ДОДАТКОВА ПЕРЕВІРКА: Чи покривають свічки весь період
+      const actualCoverage = this.calculateCoverage(klines, collectionPeriod);
+      logger.info(`[Worker ${workerId}] Data coverage for ${symbol}: ${actualCoverage.percent.toFixed(1)}%`, {
+        expectedMinutes: actualCoverage.expected,
+        actualMinutes: actualCoverage.actual,
+        gaps: actualCoverage.gaps
+      });
+      
       // Валідація даних
       const validationResult = this.validateKlines(klines, symbol);
       if (!validationResult.valid) {
@@ -141,14 +150,15 @@ export class KlineCollector {
         return { symbol, success: false, reason: 'invalid_data' };
       }
       
-      // Додаємо до черги збереження (БЕЗ транзакцій тут)
+      // Додаємо до черги збереження
       await this.queueSaveKlines(symbol_id, klines, symbol, workerId);
       
       const duration = Date.now() - startTime;
       logger.info(`[Worker ${workerId}] Successfully queued ${klines.length} minute klines for ${symbol}`, {
         duration: `${duration}ms`,
         coverage: validationResult.coverage,
-        avgVolume: validationResult.avgVolume
+        avgVolume: validationResult.avgVolume,
+        actualCoverage: `${actualCoverage.percent.toFixed(1)}%`
       });
       
       this.collectionStats.successful++;
@@ -184,6 +194,41 @@ export class KlineCollector {
       // Запускаємо обробку черги якщо вона не запущена
       this.processSaveQueue();
     });
+  }
+
+    // Новий метод для розрахунку покриття даних
+  calculateCoverage(klines, period) {
+    if (!klines || klines.length === 0) {
+      return { percent: 0, expected: 0, actual: 0, gaps: [] };
+    }
+    
+    const expectedMinutes = Math.round((period.end - period.start) / (60 * 1000));
+    const actualMinutes = klines.length;
+    
+    // Шукаємо проміжки в даних
+    const gaps = [];
+    for (let i = 1; i < klines.length; i++) {
+      const prevClose = klines[i-1][6]; // closeTime
+      const currentOpen = klines[i][0]; // openTime
+      const gapMinutes = Math.round((currentOpen - prevClose) / (60 * 1000));
+      
+      if (gapMinutes > 1) {
+        gaps.push({
+          start: new Date(prevClose).toISOString(),
+          end: new Date(currentOpen).toISOString(),
+          minutes: gapMinutes
+        });
+      }
+    }
+    
+    const coveragePercent = (actualMinutes / expectedMinutes) * 100;
+    
+    return {
+      percent: Math.min(coveragePercent, 100),
+      expected: expectedMinutes,
+      actual: actualMinutes,
+      gaps: gaps
+    };
   }
   
   async processSaveQueue() {
@@ -221,25 +266,40 @@ export class KlineCollector {
   }
   
   calculateCollectionPeriod(listingDate) {
-    // ВИПРАВЛЕНО: Збираємо точно 48 годин хвилинних даних з моменту лістингу
+    // ВИПРАВЛЕНО: Збираємо дані з точної дати лістингу, а не з зміщенням
     const start = listingDate;
-    const end = listingDate + (48 * 60 * 60 * 1000); // Рівно 48 годин
     
-    // Якщо дата лістингу в майбутньому (помилка), використовуємо поточний час
-    if (listingDate > Date.now()) {
-      logger.warn(`Listing date in future, using current time as fallback`);
+    // Визначаємо кінцеву дату - 48 годин після лістингу або поточний час
+    const targetEnd = listingDate + (48 * 60 * 60 * 1000); // 48 годин
+    const currentTime = Date.now();
+    const end = Math.min(targetEnd, currentTime);
+    
+    // Перевірка на майбутню дату
+    if (listingDate > currentTime) {
+      logger.warn(`Listing date in future for symbol, using adjusted period`);
+      // Якщо дата в майбутньому, збираємо останні 48 годин
       return {
-        start: Date.now() - (48 * 60 * 60 * 1000),
-        end: Date.now()
+        start: currentTime - (48 * 60 * 60 * 1000),
+        end: currentTime
       };
     }
     
-    // Якщо кінцева дата в майбутньому, обмежуємо поточним часом
-    const actualEnd = Math.min(end, Date.now());
+    // Перевірка мінімального періоду
+    const periodDuration = end - start;
+    const minDuration = 2 * 60 * 60 * 1000; // Мінімум 2 години
     
-    logger.debug(`Collection period: ${new Date(start).toISOString()} - ${new Date(actualEnd).toISOString()}`);
+    if (periodDuration < minDuration) {
+      logger.warn(`Collection period too short (${periodDuration / (60 * 1000)} minutes), extending`);
+      // Розширюємо період назад
+      return {
+        start: end - minDuration,
+        end: end
+      };
+    }
     
-    return { start, end: actualEnd };
+    logger.debug(`Collection period: ${new Date(start).toISOString()} - ${new Date(end).toISOString()} (${Math.round(periodDuration / (60 * 60 * 1000))} hours)`);
+    
+    return { start, end };
   }
   
   async collectWithRetry(symbol, period, workerId, maxRetries = 3) {
@@ -414,6 +474,7 @@ export class KlineCollector {
       JOIN listing_analysis la ON s.id = la.symbol_id
       WHERE la.data_status = 'analyzed'
       AND la.listing_date >= ?
+      AND la.listing_date IS NOT NULL
       AND NOT EXISTS (
         SELECT 1 FROM historical_klines hk 
         WHERE hk.symbol_id = s.id

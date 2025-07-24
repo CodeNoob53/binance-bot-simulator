@@ -66,74 +66,140 @@ export class ListingAnalyzer {
   async determineListingDate(symbol) {
     logger.debug(`Determining precise listing date for ${symbol.symbol}`);
     
-    // Спочатку отримуємо денні свічки за останні 2 роки для широкого пошуку
-    const twoYearsAgo = Date.now() - (2 * 365 * 24 * 60 * 60 * 1000);
-    
-    const dailyKlines = await this.binanceClient.getKlines(
-      symbol.symbol,
-      '1d',
-      twoYearsAgo,
-      Date.now(),
-      1000
-    );
-    
-    if (!dailyKlines || dailyKlines.length === 0) {
-      logger.warn(`No daily kline data for ${symbol.symbol}`);
-      return null;
-    }
-    
-    // Знаходимо першу свічку з значним об'ємом (це більш точна дата лістингу)
-    let listingTimestamp = null;
-    let firstSignificantVolume = null;
-    
-    for (const kline of dailyKlines) {
-      const [openTime, open, high, low, close, volume] = kline;
-      const volumeNum = parseFloat(volume);
-      
-      // Перша свічка з об'ємом > 0 та ціною > 0
-      if (volumeNum > 0 && parseFloat(open) > 0) {
-        listingTimestamp = openTime;
-        firstSignificantVolume = volumeNum;
-        break;
-      }
-    }
-    
-    if (!listingTimestamp) {
-      logger.warn(`No significant volume found for ${symbol.symbol}`);
-      return dailyKlines[0][0]; // Fallback до першої свічки
-    }
-    
-    // Додаткова перевірка: отримуємо годинні свічки навколо цієї дати для більшої точності
-    const hourlyStartTime = listingTimestamp - (24 * 60 * 60 * 1000); // 24 години до
-    const hourlyEndTime = listingTimestamp + (48 * 60 * 60 * 1000);   // 48 годин після
-    
     try {
-      const hourlyKlines = await this.binanceClient.getKlines(
+      // Спочатку отримуємо найстаріші свічки
+      const twoYearsAgo = Date.now() - (2 * 365 * 24 * 60 * 60 * 1000);
+      
+      // Отримуємо перші доступні свічки
+      const firstKlines = await this.binanceClient.getKlines(
         symbol.symbol,
-        '1h',
-        hourlyStartTime,
-        hourlyEndTime,
-        100
+        '1m',
+        twoYearsAgo,
+        Date.now(),
+        1000
       );
       
-      if (hourlyKlines && hourlyKlines.length > 0) {
-        // Знаходимо першу годинну свічку з торгівлею
-        for (const kline of hourlyKlines) {
-          const [openTime, open, high, low, close, volume] = kline;
-          if (parseFloat(volume) > 0 && parseFloat(open) > 0) {
-            listingTimestamp = openTime;
+      if (!firstKlines || firstKlines.length === 0) {
+        logger.warn(`No kline data for ${symbol.symbol}`);
+        return null;
+      }
+      
+      // Перевірка чи отримали тільки одну свічку (символ делістингований або дуже новий)
+      if (!Array.isArray(firstKlines) || firstKlines.length === 1) {
+        logger.warn(`Only one kline returned for ${symbol.symbol}, might be delisted`);
+        // Використовуємо дату цієї єдиної свічки
+        const singleKline = Array.isArray(firstKlines) ? firstKlines[0] : firstKlines;
+        if (singleKline && singleKline[0]) {
+          return singleKline[0];
+        }
+        return null;
+      }
+      
+      // Якщо перша свічка має об'єм - це може бути не точна дата лістингу
+      let earliestTimestamp = firstKlines[0][0];
+      
+      // Пробуємо отримати ще старіші свічки (якщо є достатньо даних)
+      if (firstKlines.length > 10) {
+        let searchStartTime = earliestTimestamp - (30 * 24 * 60 * 60 * 1000);
+        
+        for (let i = 0; i < 3; i++) {
+          try {
+            const olderKlines = await this.binanceClient.getKlines(
+              symbol.symbol,
+              '1m',
+              searchStartTime,
+              earliestTimestamp,
+              1000
+            );
+            
+            if (!olderKlines || olderKlines.length === 0 || 
+                (Array.isArray(olderKlines) && olderKlines.length === 1)) {
+              // Не знайдено старіших свічок або символ делістингований
+              break;
+            }
+            
+            // Оновлюємо найранішу дату
+            earliestTimestamp = olderKlines[0][0];
+            searchStartTime = earliestTimestamp - (30 * 24 * 60 * 60 * 1000);
+            
+            await sleep(100); // Невелика затримка між запитами
+          } catch (searchError) {
+            logger.debug(`Search for older klines failed: ${searchError.message}`);
             break;
           }
         }
       }
+      
+      // Тепер визначаємо точну дату лістингу
+      let actualListingTimestamp = null;
+      
+      // Отримуємо годинні свічки для більшої точності
+      try {
+        const searchRange = 7 * 24 * 60 * 60 * 1000; // 7 днів
+        const preciseKlines = await this.binanceClient.getKlines(
+          symbol.symbol,
+          '1h',
+          Math.max(earliestTimestamp - searchRange, 0),
+          earliestTimestamp + searchRange,
+          500
+        );
+        
+        if (preciseKlines && Array.isArray(preciseKlines) && preciseKlines.length > 1) {
+          // Знаходимо першу свічку з реальним об'ємом торгів
+          for (const kline of preciseKlines) {
+            const [openTime, open, high, low, close, volume] = kline;
+            const volumeNum = parseFloat(volume);
+            const openPrice = parseFloat(open);
+            
+            // Перевіряємо чи є реальна торгівля
+            if (volumeNum > 0 && openPrice > 0) {
+              actualListingTimestamp = openTime;
+              
+              // Спробуємо знайти ще точніший час через хвилинні свічки
+              try {
+                const minuteKlines = await this.binanceClient.getKlines(
+                  symbol.symbol,
+                  '1m',
+                  Math.max(openTime - (60 * 60 * 1000), 0),
+                  openTime + (60 * 60 * 1000),
+                  120
+                );
+                
+                if (minuteKlines && Array.isArray(minuteKlines) && minuteKlines.length > 1) {
+                  for (const minuteKline of minuteKlines) {
+                    const minuteVolume = parseFloat(minuteKline[5]);
+                    if (minuteVolume > 0) {
+                      actualListingTimestamp = minuteKline[0];
+                      break;
+                    }
+                  }
+                }
+              } catch (minuteError) {
+                logger.debug(`Could not get minute precision: ${minuteError.message}`);
+              }
+              
+              break;
+            }
+          }
+        }
+      } catch (preciseError) {
+        logger.debug(`Could not get hourly data: ${preciseError.message}`);
+      }
+      
+      // Якщо не знайшли точну дату - використовуємо найранішу свічку
+      if (!actualListingTimestamp) {
+        actualListingTimestamp = earliestTimestamp;
+      }
+      
+      const listingDate = new Date(actualListingTimestamp);
+      logger.info(`${symbol.symbol} listing date: ${listingDate.toISOString()}`);
+      
+      return actualListingTimestamp;
+      
     } catch (error) {
-      logger.debug(`Could not get hourly data for ${symbol.symbol}: ${error.message}`);
+      logger.error(`Failed to determine listing date for ${symbol.symbol}: ${error.message}`);
+      throw error;
     }
-    
-    const listingDate = new Date(listingTimestamp);
-    logger.info(`${symbol.symbol} precise listing: ${listingDate.toISOString()} (volume: ${firstSignificantVolume})`);
-    
-    return listingTimestamp;
   }
   
   async saveListingAnalysis(symbolId, listingDate, status, errorMessage = null) {
